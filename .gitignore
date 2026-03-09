@@ -1,0 +1,7 @@
+jaka_ros_ws/build
+jaka_ros_ws/devel
+jaka_ros_ws/install
+jaka_ros_ws/log
+jaka_ros_ws/.catkin_workspace
+jaka_ros_ws/.vscode
+jaka_ros_ws/new_file
