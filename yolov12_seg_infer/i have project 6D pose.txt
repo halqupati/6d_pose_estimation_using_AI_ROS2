@@ -1,0 +1,616 @@
+i have project 6D pose estimation using yolov12-seg and AAE , i run them and i train to estiamte 6D pose of hex-nuts, i run simulation and add realsense camera to gz and ros2 humble.the commands run project is "the command to run the project is "ros2 launch jaka_description gazebo_camera_sim.launch.py 
+ros2 run tf2_ros static_transform_publisher 0.0 0.0 0.0 1.57 0 0 DaBai_DCW2_Link camera_link_optical
+
+conda activate aae_py37_tf26
+python aae_ros_infer_sim_v2.py
+
+
+conda activate yolov12
+python yolo_ros_infer_sim_v2.py ",
+
+
+
+
+
+
+the aae_ros_infer_sim_v2.py "import rclpy
+
+from rclpy.node import Node
+
+from sensor_msgs.msg import Image
+
+from std_msgs.msg import Bool
+
+from geometry_msgs.msg import PoseStamped, TransformStamped
+
+from tf2_ros import Buffer, TransformListener, TransformBroadcaster
+
+import threading, cv2, numpy as np, requests
+
+from cv_bridge import CvBridge
+
+from ultralytics import YOLO
+
+from scipy.spatial.transform import Rotation as R_tool
+
+
+# --- Global Buffers ---
+
+bridge = CvBridge()
+
+rgb_image = None
+
+depth_image = None
+
+trigger_signal = True
+
+
+class CameraSystem(Node):
+
+    def __init__(self):
+
+        super().__init__('camera_system_sub')
+
+        # Verify these exactly match your 'ros2 topic list'
+
+        self.create_subscription(Image, '/rgbd_camera/image', self.rgb_cb, 10)
+
+        self.create_subscription(Image, '/rgbd_camera/depth_image', self.depth_cb, 10)
+
+        self.create_subscription(Bool, '/trigger', self.trigger_cb, 10)
+
+
+    def rgb_cb(self, msg):
+
+        global rgb_image
+
+        try:
+
+            # Gazebo publishes rgb8, convert to bgr8 for OpenCV
+
+            rgb_image = bridge.imgmsg_to_cv2(msg, "bgr8")
+
+            self.get_logger().info("RGB image received!", once=True)
+
+        except Exception as e:
+
+            self.get_logger().error(f"RGB conversion error: {e}")
+
+
+    def depth_cb(self, msg):
+
+        global depth_image
+
+        try:
+
+            # GZ Sim often sends 32FC1 (float32)
+
+            depth_image = bridge.imgmsg_to_cv2(msg, 'passthrough')
+
+            self.get_logger().info("Depth image received!", once=True)
+
+        except Exception as e:
+
+            self.get_logger().error(f"Depth conversion error: {e}")
+
+
+    def trigger_cb(self, msg):
+
+        global trigger_signal
+
+        trigger_signal = msg.data
+
+        self.get_logger().info(f"Trigger State: {trigger_signal}")
+
+
+class NutEstimatorAAE(Node):
+
+    def __init__(self):
+
+        super().__init__('aae_estimator_node')
+
+        # Force YOLO to use CPU only
+
+        self.model = YOLO("/home/hussain/6d_pose_estimation/nut_pose_pipeline/yolov12_seg_infer/model/best.pt")
+
+        self.model.to('cpu')  # Force CPU usage
+
+        self.get_logger().info("YOLO model loaded on CPU")
+
+        
+
+        self.K = np.array([[615.0, 0, 320.0], [0, 615.0, 240.0], [0, 0, 1]], dtype=np.float32)
+
+        self.tf_broadcaster = TransformBroadcaster(self)
+
+        self.tf_buffer = Buffer()
+
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        self.is_tf_ready = False
+
+        self.T_wc = np.eye(4)
+
+        
+
+        self.create_timer(0.1, self.process_frame)
+
+        self.get_logger().info("v3 Node Started - Visualizer Active")
+
+
+    def draw_3d_axis(self, img, R, t):
+
+        axis_len = 0.05
+
+        axis_pts = np.float32([[0,0,0], [axis_len,0,0], [0,axis_len,0], [0,0,axis_len]]).reshape(-1, 3)
+
+        rvec, _ = cv2.Rodrigues(R)
+
+        imgpts, _ = cv2.projectPoints(axis_pts, rvec, t.reshape(3,1), self.K, None)
+
+        imgpts = imgpts.astype(int)
+
+        origin = tuple(imgpts[0].ravel())
+
+        cv2.line(img, origin, tuple(imgpts[1].ravel()), (0,0,255), 2) # X
+
+        cv2.line(img, origin, tuple(imgpts[2].ravel()), (0,255,0), 2) # Y
+
+        cv2.line(img, origin, tuple(imgpts[3].ravel()), (255,0,0), 2) # Z
+
+        return img
+
+
+    def process_frame(self):
+
+        global rgb_image, depth_image, trigger_signal
+
+        
+
+        # Check Data Presence
+
+        if rgb_image is None: return
+
+        
+
+        display_img = rgb_image.copy()
+
+
+        # Check Trigger
+
+        if not trigger_signal:
+
+            cv2.putText(display_img, "STATUS: IDLE (WAITING FOR TRIGGER)", (10, 30), 
+
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+            cv2.imshow("6D Pose Visualization", display_img)
+
+            cv2.waitKey(1)
+
+            return
+
+
+        # Check Depth
+
+        if depth_image is None:
+
+            cv2.putText(display_img, "STATUS: MISSING DEPTH DATA", (10, 30), 
+
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+            cv2.imshow("6D Pose Visualization", display_img)
+
+            cv2.waitKey(1)
+
+            self.get_logger().info(f"MISSING DEPTH DATA")
+
+            
+
+
+        # TF Handling
+
+        if not self.is_tf_ready:
+
+            try:
+
+                t = self.tf_buffer.lookup_transform('world', 'camera_link_optical', rclpy.time.Time())
+
+                self.T_wc = self.transform_to_matrix(t)
+
+                self.is_tf_ready = True
+
+                self.get_logger().info(f"TF linked")
+
+            except:
+
+                return
+
+
+        # Inference Logic (now on CPU)
+
+        self.get_logger().info(f"model will be load")
+
+        results = self.model(rgb_image, conf=0.6, verbose=False, device='cpu')
+
+        for r in results:
+
+            if r.masks is not None:
+
+                display_img = r.plot()
+
+                mask = r.masks.data[0].cpu().numpy()
+
+                x1, y1, x2, y2 = map(int, r.boxes.xyxy[0].cpu().numpy())
+
+                crop = rgb_image[y1:y2, x1:x2]
+
+                self.get_logger().info(f"model is loaded")
+
+                
+
+                try:
+
+                    _, enc = cv2.imencode('.jpg', crop)
+
+                    resp = requests.post('http://localhost:5001/get_rotation', files={"image": enc.tobytes()}, timeout=30.0)
+
+                    R_mat = np.array(resp.json()['R'])
+
+                    
+
+                    # Depth Calculation
+
+                    z_m = np.median(depth_image[mask > 0])
+
+                    if np.isnan(z_m) or z_m <= 0: continue
+
+                    if z_m > 10: z_m /= 1000.0 # Convert mm to m
+
+                    
+
+                    cx, cy = r.boxes.xywh[0][0].cpu().item(), r.boxes.xywh[0][1].cpu().item()
+
+                    tx = (cx - self.K[0, 2]) * z_m / self.K[0, 0]
+
+                    ty = (cy - self.K[1, 2]) * z_m / self.K[1, 1]
+
+                    T_vec = np.array([tx, ty, z_m])
+
+
+                    display_img = self.draw_3d_axis(display_img, R_mat, T_vec)
+
+                    self.broadcast_pose(self.T_wc @ self.compose_mat(R_mat, T_vec))
+
+                except Exception as e:
+
+                    self.get_logger().error(f"Inference Step Error: {e}")
+
+
+        cv2.imshow("6D Pose Visualization", display_img)
+
+        cv2.waitKey(1)
+
+
+    def transform_to_matrix(self, t):
+
+        m = np.eye(4)
+
+        m[:3, 3] = [t.transform.translation.x, t.transform.translation.y, t.transform.translation.z]
+
+        q = [t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w]
+
+        m[:3, :3] = R_tool.from_quat(q).as_matrix()
+
+        return m
+
+
+    def compose_mat(self, R, t):
+
+        m = np.eye(4); m[:3, :3], m[:3, 3] = R, t
+
+        return m
+
+
+    def broadcast_pose(self, mat):
+
+        now = self.get_clock().now().to_msg()
+
+        t = TransformStamped()
+
+        
+
+        t.header.stamp = now
+
+        t.header.frame_id = 'world'
+
+        t.child_frame_id = 'detected_nut'
+
+        
+
+        t.transform.translation.x = float(mat[0, 3])
+
+        t.transform.translation.y = float(mat[1, 3])
+
+        t.transform.translation.z = float(mat[2, 3])
+
+        
+
+        q = R_tool.from_matrix(mat[:3, :3]).as_quat()
+
+        t.transform.rotation.x = float(q[0])
+
+        t.transform.rotation.y = float(q[1])
+
+        t.transform.rotation.z = float(q[2])
+
+        t.transform.rotation.w = float(q[3])
+
+
+        try:
+
+            if hasattr(self.tf_broadcaster, 'send_transform'):
+
+                self.tf_broadcaster.send_transform(t)
+
+            elif hasattr(self.tf_broadcaster, 'sendTransform'):
+
+                self.tf_broadcaster.sendTransform(t)
+
+            else:
+
+                self.get_logger().error(f"Broadcaster methods: {dir(self.tf_broadcaster)}")
+
+        except Exception as e:
+
+            self.get_logger().error(f"TF Failed but continuing: {e}")
+
+
+if __name__ == '__main__':
+
+    rclpy.init()
+
+    executor = rclpy.executors.MultiThreadedExecutor()
+
+    nodes = [CameraSystem(), NutEstimatorAAE()]
+
+    for n in nodes: executor.add_node(n)
+
+    threading.Thread(target=executor.spin, daemon=True).start()
+
+    try:
+
+        while rclpy.ok(): pass
+
+    finally: rclpy.shutdown()" ,
+    
+    
+    
+    
+  aae_ros_infer_sim_v2.py
+
+"import flask
+
+import cv2
+
+import numpy as np
+
+import tensorflow.compat.v1 as tf
+
+tf.disable_eager_execution()
+
+import os
+
+from auto_pose.ae import factory, utils
+
+
+app = flask.Flask(__name__)
+
+
+workspace_path = os.environ.get('AE_WORKSPACE_PATH')
+
+experiment_name = 'my_autoencoder' 
+
+experiment_group = 'exp_group' 
+
+
+# Load Model
+
+log_dir = utils.get_log_dir(workspace_path, experiment_name, experiment_group)
+
+ckpt_dir = utils.get_checkpoint_dir(log_dir)
+
+codebook, dataset = factory.build_codebook_from_name(experiment_name, experiment_group, return_dataset=True)
+
+
+gpu_options = tf.GPUOptions(allow_growth=True, per_process_gpu_memory_fraction=0.6)
+
+sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
+
+factory.restore_checkpoint(sess, tf.train.Saver(), ckpt_dir)
+
+
+@app.route('/get_rotation', methods=['POST'])
+
+def get_rotation():
+
+    try:
+
+        # Receive image from YOLO node
+
+        file = flask.request.files['image'].read()
+
+        nparr = np.frombuffer(file, np.uint8)
+
+        im = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        
+
+        # AAE Preprocessing (Match your training size, usually 128x128)
+
+        im = cv2.resize(im, (128, 128))
+
+        
+
+        # Get Rotation Matrix
+
+        R = codebook.nearest_rotation(sess, im)
+
+        return flask.jsonify({"R": R.tolist()})
+
+    except Exception as e:
+
+        return flask.jsonify({"error": str(e)}), 500
+
+
+if __name__ == '__main__':
+
+    app.run(host='0.0.0.0', port=5001, debug=False, threaded=False) " ,
+    
+    
+    
+    
+    
+    the launch file "import os
+import xacro
+from pathlib import Path
+from ament_index_python.packages import get_package_share_directory
+
+from launch import LaunchDescription
+from launch.actions import IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import PathJoinSubstitution
+from launch_ros.actions import Node
+from launch_ros.substitutions import FindPackageShare
+from launch.actions import SetEnvironmentVariable
+
+
+def generate_launch_description():
+    # === Parameters/Arguments ===
+    robot_description_path = get_package_share_directory('jaka_description')
+    pkg_ur_description = 'jaka_zu5_moveit_config'
+    urdf_path = 'config/jaka_zu5.urdf.xacro'
+    xacro_file = os.path.join(get_package_share_directory(pkg_ur_description), urdf_path)
+    robo_des_raw = xacro.process_file(xacro_file).toxml()
+
+    models_path = os.path.join(get_package_share_directory('jaka_description'), 'worlds')
+
+    gazebo_resource_path = SetEnvironmentVariable(
+            name='IGN_GAZEBO_RESOURCE_PATH',
+            value=models_path
+    )
+
+    world_path = PathJoinSubstitution([
+        FindPackageShare("jaka_description"),  # Replace with your package name
+        "worlds",
+        "world.sdf"
+    ])
+
+    rviz_config_file = PathJoinSubstitution(
+        [FindPackageShare("jaka_description"), "config", "display2.rviz"]
+    )
+
+    # === Nodes ===
+    robot_state_publisher_node = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        output='screen',
+        parameters=[
+            {'robot_description': robo_des_raw},
+            {'use_sim_time': True}
+        ]
+    )
+
+    static_tf = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="static_transform_publisher",
+        output="log",
+        arguments=["--frame-id", "world", "--child-frame-id", "Link_0"],
+        parameters=[{"use_sim_time": True}],
+    )
+
+    rviz_node = Node(
+        package="rviz2",
+        executable="rviz2",
+        name="rviz2",
+        output="log",
+        arguments=["-d", rviz_config_file],
+    )
+
+    joint_state_broadcaster_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["joint_state_broadcaster", "--controller-manager", "/controller_manager"],
+    )
+
+    jaka_zu5_controller_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["jaka_zu5_controller", "-c", "/controller_manager"],
+    )
+
+
+    gz_spawn_entity = Node(
+        package="ros_gz_sim",
+        executable="create",
+        output="screen",
+        arguments=[
+            "-string", robo_des_raw,
+            "-name", "jaka_zu5",
+            "-allow_renaming", "true",
+            "-x", "0.0",
+            "-y", "-0.15",
+            "-z", "1.1",
+            "-R", "0.0",
+            "-P", "0.0",
+            "-Y", "0.0"
+        ]
+    )
+
+    gz_launch_description_with_gui = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource([
+            FindPackageShare("ros_gz_sim"), "/launch/gz_sim.launch.py"
+        ]),
+        launch_arguments={"gz_args": ["-r -v 4 ", world_path]}.items(),
+    )
+
+    gz_sim_bridge = Node(
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        arguments=[
+            "/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock",
+            "/rgbd_camera/image@sensor_msgs/msg/Image[ignition.msgs.Image",
+            "/rgbd_camera/depth_image@sensor_msgs/msg/Image[ignition.msgs.Image",
+            "/rgbd_camera/camera_info@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo",
+            "/rgbd_camera/points@sensor_msgs/msg/PointCloud2[ignition.msgs.PointCloudPacked",
+        ],
+        output="screen",
+    )
+
+
+    depth_image_converter = Node(
+        package="depth_image_proc",
+        executable="convert_metric_node",
+        name="depth_image_converter",
+        output="screen",
+        remappings=[
+            ("image_raw", "/rgbd_camera/depth_image"),
+            ("camera_info", "/rgbd_camera/camera_info"),
+            ("image", "/rgbd_camera/depth_image/image")
+        ]
+    )
+
+    return LaunchDescription([
+        gazebo_resource_path,
+        robot_state_publisher_node,
+        static_tf,
+        rviz_node,
+        joint_state_broadcaster_spawner,
+        jaka_zu5_controller_spawner,
+        gz_spawn_entity,
+        gz_launch_description_with_gui,
+        gz_sim_bridge,
+        depth_image_converter,
+    ])
+"

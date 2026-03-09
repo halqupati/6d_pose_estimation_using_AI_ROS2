@@ -1,0 +1,21 @@
+hardware:
+  robot_ip: 192.168.1.100
+
+camera:
+  parent_frame: Link_6
+  camera_x: 0.060
+  camera_y: 0.000
+  camera_z: 0.120
+  camera_roll: 0.000
+  camera_pitch: 1.5708
+  camera_yaw: 0.000
+  serial_no: "''"
+
+pipeline:
+  use_driver: true
+  use_move_group: true
+  use_rviz: true
+  use_bin_picking: false
+  launch_planner: true
+  launch_camera: true
+  launch_robot: true

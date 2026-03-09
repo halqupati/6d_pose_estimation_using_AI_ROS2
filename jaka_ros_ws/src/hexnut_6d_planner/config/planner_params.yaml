@@ -1,0 +1,20 @@
+pose_fusion_node:
+  ros__parameters:
+    yolo_pose_topic: /yolov12_seg/hexnut_pose
+    aae_pose_topic: /aae/hexnut_pose
+    output_pose_topic: /hexnut/pose_6d
+    fusion_mode: prefer_aae
+
+grasp_planner_node:
+  ros__parameters:
+    input_pose_topic: /hexnut/pose_6d
+    output_target_topic: /graspnet/target_pose
+    approach_offset_z: 0.03
+
+adaptive_compliance_node:
+  ros__parameters:
+    target_pose_topic: /graspnet/target_pose
+    wrench_topic: /force_torque/wrench
+    twist_cmd_topic: /jaka_driver/compliance_twist_cmd
+    admittance_gain: 0.002
+    max_linear_speed: 0.02

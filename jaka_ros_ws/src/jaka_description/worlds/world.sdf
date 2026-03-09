@@ -1,0 +1,109 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <world name="empty_world">
+    
+    <!-- Physics -->
+    <physics name="default_physics" type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+      <ode>
+        <solver>
+          <type>quick</type>
+          <iters>100</iters>
+          <sor>1.3</sor>
+        </solver>
+        <constraints>
+          <cfm>0.0</cfm>
+          <erp>0.2</erp>
+        </constraints>
+      </ode>
+    </physics>
+
+ 
+    <!-- Light -->
+    <light name="sun" type="directional">
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+      <cast_shadows>true</cast_shadows>
+    </light>
+    
+
+    <!-- Ground plane -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <pose>0 0 0 0 0 0</pose>
+        <collision name="collision">
+          <geometry>
+            <box>
+              <size>50 50 0.1</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box>
+              <size>50 50 0.1</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.5 0.5 0.5 1</ambient>
+            <diffuse>0.5 0.5 0.5 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+     <!-- Table -->
+    <include>
+        <uri>file:///home/ubuntu/.ignition/fuel/fuel.gazebosim.org/openrobotics/models/table</uri>
+        <name>table_1</name>
+        <pose>0 0 0.0 0 0 0</pose>
+    </include>
+    <include>
+        <uri>file:///home/ubuntu/.ignition/fuel/fuel.gazebosim.org/openrobotics/models/table</uri>
+        <name>table_2</name>
+        <pose>0 0.81 0.0 0 0 0</pose>
+    </include>
+    
+    <include>
+        <uri>model://checkerboard_plane</uri>
+        <name>checkerboard plane</name>
+        <pose>0 0.81 1.2 0 0 0</pose>
+    </include>
+
+    <model name="nut1">
+      <include>
+        <uri>model://nut</uri>
+      </include>
+      <pose>-0.6 0.0 1.05 1.5 1.5 1.5</pose>
+    </model>
+
+    <model name="nut2">
+      <include>
+        <uri>model://nut</uri>
+      </include>
+      <pose>-0.5 0.02 1.05 0 0 0</pose>
+    </model>
+
+    <model name="nut3">
+      <include>
+        <uri>model://nut</uri>
+      </include>
+      <pose>-0.4 0.08 1.05 0 0 0</pose>
+    </model>
+
+    <model name="nut4">
+      <include>
+        <uri>model://nut</uri>
+      </include>
+      <pose>-0.5 0.07 1.05 0 0 0</pose>
+    </model>
+
+   
+    
+  </world>
+</sdf>
