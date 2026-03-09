@@ -4,7 +4,7 @@ jaka_ros_ws/install
 jaka_ros_ws/log
 jaka_ros_ws/.catkin_workspace
 jaka_ros_ws/.vscode
-jaka_ros_ws/new_file
+jaka_ros_ws/new file
 aae_infer/autoencoder_ws/experiments/exp_group/my_autoencoder/checkpoints
 /aae_infer/autoencoder_ws/tmp_datasets
 
