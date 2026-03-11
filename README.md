@@ -14,7 +14,7 @@ ros2 launch bin_packing_pkg jaka_zu5_with_two_camera_simulation.launch.py
 ```
 **2) Run moveit_config with bin_picking_node as move_group_node2
 ```bash
-ros2 launch bin_packing_pkg move_jaka_zu5_with_moveit_without_rviz.launch.py 
+ros2 launch bin_packing_pkg run_bin_picking_nodes.launch.py 
 ```
 **3)
 ```bash
