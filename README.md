@@ -41,12 +41,12 @@ python3 yolo_ros_infer_sim_v11.py
 
 ## Demo Video
 
-- [Screencast (WEBM)](media%20and%20files/Screencast%20from%202026-03-12%2000-43-34.webm)
+- [Screencast (WEBM)](media_and_files/Screencast%20from%202026-03-12%2000-43-34.webm)
 
 <video src="media%20and%20files/Screencast%20from%202026-03-12%2000-43-34.webm" controls width="900"></video>
 
 ## Screenshots
 
-![Simulation screenshot 1](media%20and%20files/Screenshot%20from%202026-03-12%2000-17-16.png)
-![Simulation screenshot 2](media%20and%20files/Screenshot%20from%202026-03-12%2000-42-18.png)
-![Simulation screenshot 3](media%20and%20files/Screenshot%20from%202026-03-12%2000-43-04.png)
+![Simulation screenshot 1](media_and_files/Screenshot%20from%202026-03-12%2000-17-16.png)
+![Simulation screenshot 2](media_and_files/Screenshot%20from%202026-03-12%2000-42-18.png)
+![Simulation screenshot 3](media_and_files/Screenshot%20from%202026-03-12%2000-43-04.png)
