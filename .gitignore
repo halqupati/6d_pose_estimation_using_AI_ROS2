@@ -8,4 +8,5 @@ jaka_ros_ws/.vscode
 jaka_ros_ws/new file
 aae_infer/autoencoder_ws/experiments/exp_group/my_autoencoder/checkpoints
 /aae_infer/autoencoder_ws/tmp_datasets
-
+jaka_ros_ws/src/bin_packing_pkg/launch/__pycache__
+yolov12_seg_infer/__pycache__/yolo_ros_infer_sim_v11.cpython-310.pyc
