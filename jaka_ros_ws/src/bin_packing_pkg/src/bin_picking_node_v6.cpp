@@ -310,7 +310,7 @@ private:
                 arm_move_group->setStartStateToCurrentState();
 
                 // Force a stable seed posture to avoid folded IK branches near the table.
-                std::vector<double> ready_joints = {-1.57, 1.57, -1.57, 1.57, 1.57, 0.0};
+                std::vector<double> ready_joints = {3.1415, 1.57, -1.57, 1.57, 1.57, 0.0};
                 if (!try_or_recover(move_arm_to_joint_target(ready_joints), "Pregrasp seed failed")) {
                     planning = false;
                     break;
