@@ -86,7 +86,10 @@ def generate_launch_description():
         .robot_description_semantic(file_path="config/jaka_zu5.srdf")
         .trajectory_execution(file_path= "config/moveit_controllers.yaml")
         .moveit_cpp(moveit_config_pkg + "/config/controller_setting.yaml")
-        .planning_pipelines(pipelines=["ompl"])
+        .planning_pipelines(
+            pipelines=["ompl"],
+            file_path="config/ompl_planning.yaml",
+        )
         .sensors_3d(file_path="config/sensors_3d.yaml")
         .to_moveit_configs()
     )
