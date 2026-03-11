@@ -18,7 +18,9 @@
 #include <geometric_shapes/shape_operations.h>
 #include <geometric_shapes/mesh_operations.h>
 #include <geometric_shapes/shapes.h>
+#include <algorithm>
 #include <array>
+#include <cmath>
 
 #define PI 3.14159265359
 
@@ -30,6 +32,11 @@
 #define COLOR_MAGENTA "\033[35m"
 #define COLOR_CYAN    "\033[36m"
 #define COLOR_RESET   "\033[0m"
+
+namespace {
+constexpr double kHoverHeight = 0.15;        // Hover above detected nut center (m)
+constexpr double kLink6ToTip = 0.155;        // Link_6 to finger contact region (m)
+}
 
 class ControlRobot : public rclcpp::Node {
 public:
@@ -45,6 +52,13 @@ public:
     bool nut_pose_received_ = false;
     std::array<float, 4> nut_pose_angle_;
     bool nut_pose_angle_received_ = false;
+    bool sequence0_only_ = true;
+    double ws_x_min_ = 0.05;
+    double ws_x_max_ = 0.65;
+    double ws_y_min_ = -0.55;
+    double ws_y_max_ = 0.15;
+    double ws_z_min_ = -0.05;
+    double ws_z_max_ = 0.25;
     double roll_current, pitch_current, yaw_current;
     size_t i = 0;
 
@@ -86,6 +100,14 @@ public:
             10
         );
 
+        sequence0_only_ = this->declare_parameter<bool>("sequence0_only", true);
+        ws_x_min_ = this->declare_parameter<double>("workspace_x_min", ws_x_min_);
+        ws_x_max_ = this->declare_parameter<double>("workspace_x_max", ws_x_max_);
+        ws_y_min_ = this->declare_parameter<double>("workspace_y_min", ws_y_min_);
+        ws_y_max_ = this->declare_parameter<double>("workspace_y_max", ws_y_max_);
+        ws_z_min_ = this->declare_parameter<double>("workspace_z_min", ws_z_min_);
+        ws_z_max_ = this->declare_parameter<double>("workspace_z_max", ws_z_max_);
+
         // ---- TIMER ----
         rclcpp::TimerBase::SharedPtr timer =
             this->create_wall_timer(
@@ -109,6 +131,12 @@ public:
         );
 
         RCLCPP_INFO(this->get_logger(), "Jaka_zu5 Control node created. Waiting for MoveGroup init...");
+        RCLCPP_INFO(this->get_logger(), "sequence0_only=%s", sequence0_only_ ? "true" : "false");
+        RCLCPP_INFO(
+            this->get_logger(),
+            "workspace bounds: x[%.3f, %.3f] y[%.3f, %.3f] z[%.3f, %.3f]",
+            ws_x_min_, ws_x_max_, ws_y_min_, ws_y_max_, ws_z_min_, ws_z_max_
+        );
     }
 
     bool waitForRobotState(double timeout_sec = 2.0)
@@ -148,11 +176,72 @@ public:
         {
             RCLCPP_INFO(this->get_logger(), "Robot state ready");
         }
+
+        // Incoming /pos_angle is published in Link_0 coordinates.
+        arm_move_group->setPoseReferenceFrame("Link_0");
+        RCLCPP_INFO(this->get_logger(), "MoveIt planning frame: %s", arm_move_group->getPlanningFrame().c_str());
+        RCLCPP_INFO(this->get_logger(), "Pose reference frame set to: %s", arm_move_group->getPoseReferenceFrame().c_str());
     }
 
 private:
 
     void apply_sleep(double s) { std::this_thread::sleep_for(std::chrono::duration<double>(s)); }
+
+    bool isPoseInsideWorkspace(const std::array<float, 4> &pose_angle) const
+    {
+        const double x = pose_angle[0];
+        const double y = pose_angle[1];
+        const double z = pose_angle[2];
+        return x >= ws_x_min_ && x <= ws_x_max_ &&
+               y >= ws_y_min_ && y <= ws_y_max_ &&
+               z >= ws_z_min_ && z <= ws_z_max_;
+    }
+
+    void request_new_detection(const char *reason)
+    {
+        RCLCPP_WARN(this->get_logger(), "%s. Resetting to sequence 0 and requesting fresh detection.", reason);
+        sequence = 0;
+        planning = false;
+        nut_pose_angle_received_ = false;
+        msg.data = true;
+        bool_pub->publish(msg);
+    }
+
+    bool decodePoseAngleMessage(const std_msgs::msg::Float32MultiArray::SharedPtr &msg, std::array<float, 4> &pose_angle)
+    {
+        if (msg->data.size() < 4) {
+            RCLCPP_WARN(this->get_logger(), "Ignoring /pos_angle: expected at least 4 values, got %zu", msg->data.size());
+            return false;
+        }
+
+        pose_angle[0] = msg->data[0];
+        pose_angle[1] = msg->data[1];
+        pose_angle[2] = msg->data[2];
+
+        if (msg->data.size() >= 7) {
+            tf2::Quaternion quat(msg->data[3], msg->data[4], msg->data[5], msg->data[6]);
+            double roll = 0.0;
+            double pitch = 0.0;
+            double yaw = 0.0;
+            tf2::Matrix3x3(quat).getRPY(roll, pitch, yaw);
+            pose_angle[3] = static_cast<float>(yaw);
+        } else {
+            pose_angle[3] = msg->data[3];
+        }
+
+        const bool valid_pose =
+            std::isfinite(pose_angle[0]) &&
+            std::isfinite(pose_angle[1]) &&
+            std::isfinite(pose_angle[2]) &&
+            std::isfinite(pose_angle[3]);
+
+        if (!valid_pose) {
+            RCLCPP_WARN(this->get_logger(), "Ignoring /pos_angle: non-finite values received");
+            return false;
+        }
+
+        return true;
+    }
     
     void addCollisionMesh()
         {
@@ -192,16 +281,27 @@ private:
     // -------------------- CALLBACKS --------------------
     void pose_angleCallback(const std_msgs::msg::Float32MultiArray::SharedPtr msg)
     {
+        std::array<float, 4> decoded_pose_angle;
+        if (!decodePoseAngleMessage(msg, decoded_pose_angle)) {
+            return;
+        }
+        if (!isPoseInsideWorkspace(decoded_pose_angle)) {
+            RCLCPP_WARN(
+                this->get_logger(),
+                "Ignoring /pos_angle outside workspace x=%.4f y=%.4f z=%.4f yaw=%.4f",
+                decoded_pose_angle[0], decoded_pose_angle[1], decoded_pose_angle[2], decoded_pose_angle[3]
+            );
+            return;
+        }
+
         std::lock_guard<std::mutex> lock(pose_angle_mutex);
-        std::copy_n(msg->data.begin(), 4, nut_pose_angle_.begin());
-        /*
-        float x = nut_pose_angle[0];
-        float y = nut_pose_angle[1];
-        float z = nut_pose_angle[2];
-        float angle = nut_pose_angle[3];
-        */
+        nut_pose_angle_ = decoded_pose_angle;
         nut_pose_angle_received_ = true;
-        RCLCPP_INFO(this->get_logger(),  "we get nut position");
+        RCLCPP_INFO(
+            this->get_logger(),
+            "Received nut pose x=%.4f y=%.4f z=%.4f yaw=%.4f",
+            nut_pose_angle_[0], nut_pose_angle_[1], nut_pose_angle_[2], nut_pose_angle_[3]
+        );
     }
 
     void timerCallback()
@@ -247,8 +347,11 @@ private:
 
                 target_pose.position.x = local_nut_pose_angle[0];
                 target_pose.position.y = local_nut_pose_angle[1];
-                target_pose.position.z = current_pose.pose.position.z;
-                target_pose.orientation = current_pose.pose.orientation;
+                target_pose.position.z = local_nut_pose_angle[2] + kHoverHeight;
+
+                tf2::Quaternion q_hover;
+                q_hover.setRPY(0.0, PI, local_nut_pose_angle[3]);
+                target_pose.orientation = tf2::toMsg(q_hover);
             
                 RCLCPP_INFO(this->get_logger(), "EE Pose:");
                 RCLCPP_INFO(this->get_logger(), "Position - x: %f, y: %f, z: %f",
@@ -272,43 +375,20 @@ private:
                         target_pose.orientation.z,
                         target_pose.orientation.w);
 
-                std::vector<geometry_msgs::msg::Pose> waypoints;
-
-                geometry_msgs::msg::Pose start = arm_move_group->getCurrentPose().pose;
-                waypoints.push_back(start);
-
-                geometry_msgs::msg::Pose target = start;
-                target.position.z = target_pose.position.z;
-                waypoints.push_back(target);
-
-                moveit_msgs::msg::RobotTrajectory trajectory;
-                double fraction = arm_move_group->computeCartesianPath(
-                    waypoints,
-                    0.002,   // eef_step (meters)
-                    0.0,     // jump_threshold
-                    trajectory
-                );
-
-                if (fraction > 0.99)
-                {
-                    robot_trajectory::RobotTrajectory rt(
-                        arm_move_group->getRobotModel(),
-                        arm_move_group->getName());
-
-                    rt.setRobotTrajectoryMsg(*arm_move_group->getCurrentState(), trajectory);
-
-                    trajectory_processing::TimeOptimalTrajectoryGeneration totg;
-                    totg.computeTimeStamps(
-                        rt,
-                        0.6,   // velocity scaling factor (20%)
-                        0.3    // acceleration scaling factor (10%)
-                    );
-
-                    rt.getRobotTrajectoryMsg(trajectory);
-                    arm_move_group->execute(trajectory);
+                if (!pose_target_plan_and_execute(target_pose)) {
+                    request_new_detection("Sequence 0 move failed");
+                    return;
                 }
 
-                sequence = 1;
+                if (sequence0_only_) {
+                    RCLCPP_INFO(this->get_logger(), "Sequence 0-only debug mode: holding at hover pose.");
+                    sequence = 0;
+                    nut_pose_angle_received_ = false;
+                    msg.data = true;
+                    bool_pub->publish(msg);
+                } else {
+                    sequence = 1;
+                }
                 planning = false;
             }
             else if (sequence == 1 && planning == false) //Rotating the gripper
@@ -343,7 +423,10 @@ private:
                 target_pose.orientation.z = tf_quat.z();
                 target_pose.orientation.w = tf_quat.w();
 
-                pose_target_plan_and_execute(target_pose);
+                if (!pose_target_plan_and_execute(target_pose)) {
+                    request_new_detection("Sequence 1 rotate failed");
+                    return;
+                }
 
                 sequence = 2;
                 planning = false;
@@ -372,9 +455,11 @@ private:
                     local_nut_pose_angle = nut_pose_angle_;
                 }
 
+                current_pose = arm_move_group->getCurrentPose("Link_6");
+
                 target_pose.position.x = current_pose.pose.position.x;
                 target_pose.position.y = current_pose.pose.position.y;
-                target_pose.position.z = local_nut_pose_angle[2];
+                target_pose.position.z = local_nut_pose_angle[2] + kLink6ToTip;
                 target_pose.orientation = current_pose.pose.orientation;
             
                 RCLCPP_INFO(this->get_logger(), "EE Pose:");
@@ -568,7 +653,10 @@ private:
                         target_pose.orientation.z,
                         target_pose.orientation.w);
                 
-                pose_target_plan_and_execute(target_pose);
+                if (!pose_target_plan_and_execute(target_pose)) {
+                    request_new_detection("Sequence 6 move-to-place failed");
+                    return;
+                }
                 
                 sequence = 7;
                 planning = false;
@@ -692,7 +780,7 @@ private:
     }
 
     // -------------------- MOTION FUNCTIONS --------------------
-    void pose_target_plan_and_execute(const geometry_msgs::msg::Pose &target_pose)
+    bool pose_target_plan_and_execute(const geometry_msgs::msg::Pose &target_pose)
     {
         arm_move_group->setPoseTarget(target_pose);
 
@@ -707,13 +795,20 @@ private:
             RCLCPP_INFO(this->get_logger(), "Plan OK, executing...");
             auto result = arm_move_group->execute(plan);
             if (result == moveit::core::MoveItErrorCode::SUCCESS)
+            {
                 RCLCPP_INFO(this->get_logger(), "Motion done.");
+                return true;
+            }
             else
+            {
                 RCLCPP_WARN(this->get_logger(), "Motion failed.");
+                return false;
+            }
         }
         else
         {
             RCLCPP_WARN(this->get_logger(), "Planning failed.");
+            return false;
         }
     }
 
