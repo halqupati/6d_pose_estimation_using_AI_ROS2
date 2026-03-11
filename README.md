@@ -3,9 +3,14 @@
 
 
 # ROS2 pakages must be install 
-sudo apt install ros-humble-pcl-ros
-sudo apt install ros-humble-moveit-ros-perception
 
+
+```bash
+sudo apt install ros-humble-pcl-ros
+```
+```bash
+sudo apt install ros-humble-moveit-ros-perception
+```
  # How run simualtion
 
 **1) Run gazebo ign, rviz, moviet, run_move_group_node, ros2_control, ros_gz_bridge and depth_image_converter
@@ -16,35 +21,18 @@ ros2 launch bin_packing_pkg jaka_zu5_with_two_camera_simulation.launch.py
 ```bash
 ros2 launch bin_packing_pkg run_bin_picking_nodes.launch.py 
 ```
-**3)
+**3) Activate AAE conda enveroment and run AAE_infer node
 ```bash
 conda activate aae_py37_tf26
 python3 aae_ros_infer_sim_v4.py
 ```
-
-**4)
+**4) Activate YOLOV12-seg conda enveroment and run Yolo_infer node
 ```bash
 conda activate yolov12_py10
 python3 yolo_ros_infer_sim_v11.py
 ```
 
 
-
-
-```bash
-
-```
-
-```bash
-
-```
-
-```bash
-
-```
-```bash
-
-```
 ```bash
 
 ```
