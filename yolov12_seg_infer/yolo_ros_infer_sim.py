@@ -53,7 +53,7 @@ class NutEstimatorAAE(Node):
         super().__init__('aae_estimator_node')
         
         # 1. Load YOLOv12-seg (Ensure the path to your best.pt is correct)
-        self.model = YOLO("/home/hussain/6d_pose_estimation/nut_pose_pipeline/yolov12_seg_infer/model/best.pt")
+        self.model = YOLO("/home/hussain/6d_pose_estimation_using_AI_ROS2/nut_pose_pipeline/yolov12_seg_infer/model/best.pt")
         
         # 2. Camera Intrinsics (Values from your Gazebo cam_K.txt)
         self.K = np.array([[615.0, 0, 320.0], [0, 615.0, 240.0], [0, 0, 1]])

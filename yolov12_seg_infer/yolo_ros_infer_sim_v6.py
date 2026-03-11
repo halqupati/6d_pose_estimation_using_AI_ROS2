@@ -60,7 +60,7 @@ class CameraSystem(Node):
 class NutEstimatorAAE(Node):
     def __init__(self):
         super().__init__('aae_estimator_node')
-        self.model = YOLO("/home/ubuntu/6d_pose_estimation/nut_pose_pipeline/yolov12_seg_infer/model/best.pt")
+        self.model = YOLO("/home/ubuntu/6d_pose_estimation/6d_pose_estimation_using_AI_ROS2/yolov12_seg_infer/model/best.pt")
         self.model.to('cpu')
         self.get_logger().info("YOLO model loaded on CPU")
 
