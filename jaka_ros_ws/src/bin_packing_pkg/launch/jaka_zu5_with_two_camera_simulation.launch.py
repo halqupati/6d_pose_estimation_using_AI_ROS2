@@ -25,6 +25,7 @@ def generate_launch_description():
     urdf_path = 'config/jaka_zu5.urdf.xacro'
     xacro_file = os.path.join(get_package_share_directory(pkg_ur_description), urdf_path)
     robo_des_raw = xacro.process_file(xacro_file).toxml()
+    ompl_yaml_path = os.path.join(get_package_share_directory("jaka_zu5_moveit_config"), 'config', 'ompl_planning.yaml')
 
     octomap_updater_config = os.path.join(
         get_package_share_directory("jaka_zu5_moveit_config"),
@@ -86,11 +87,8 @@ def generate_launch_description():
         .robot_description_semantic(file_path="config/jaka_zu5.srdf")
         .trajectory_execution(file_path= "config/moveit_controllers.yaml")
         .moveit_cpp(moveit_config_pkg + "/config/controller_setting.yaml")
-        .planning_pipelines(
-            pipelines=["ompl"],
-            file_path="config/ompl_planning.yaml",
-        )
-        .sensors_3d(file_path="config/sensors_3d.yaml")
+        .planning_pipelines( pipelines=["ompl"])
+        .sensors_3d(moveit_config_pkg + "/config/sensors_3d.yaml")
         .to_moveit_configs()
     )
     
@@ -102,7 +100,17 @@ def generate_launch_description():
         output="screen",
         parameters=[
             moveit_config.to_dict(),
-            {'use_sim_time': True},
+            {
+                "ompl.request_adapters": (
+                    "default_planner_request_adapters/FixWorkspaceBounds "
+                    "default_planner_request_adapters/FixStartStateBounds "
+                    "default_planner_request_adapters/FixStartStateCollision "
+                    "default_planner_request_adapters/FixStartStatePathConstraints "
+                    "default_planner_request_adapters/AddTimeOptimalParameterization"
+                ),
+                "ompl.start_state_max_bounds_error": 0.1,
+            
+                'use_sim_time': True},
         ],
     )
     
