@@ -50,8 +50,21 @@ python3 yolo_ros_infer_sim_v11.py
 ### How to run in real world
 
 *A) Test movement using safe methods
-
-
+(All details found https://docs.mech-mind.net/1.6/en-GB/SoftwareSuite/RobotIntegrations/FullControlProgram/Jaka/Jaka.html)
+**1) Connection Setup:
+Network: Ensure your device (Tablet/PC) is on the same network as the JAKA controller.
+**2) Login: 
+Open the App and click the Connect icon in the top right.  
+Default Administrator Password: jakazuadmin
+**3) Powering & Enabling the Robot:
+Once connected, the status will show "Connected," but the robot is still "Off."
+3-1 ) Power On: Click the Power button in the App. You will hear the internal fans and electronics start.  
+3-2 ) Enable: Once powered, click Enable. This engages the motors and brakes. You will hear a distinct "click" from the joints. The status should now say "Enabled" or "Idle."
+**4) Manual Control (Jogging & Free-Drive)
+Before running a program, test the movement manually:
+4-1) Jogging: Use the on-screen directional keys to move the robot in Joint Space (J1-J6) or Cartesian Space (X, Y, Z).
+4-2) Safety Tip: Keep the Global Speed slider at 10% or lower for these tests.
+Free-Drive (Drag Teaching): Press the physical blue button on the robot's end-effector (or the Free-Drive button in the App). This allows you to physically push and pull the arm to the hex-nut location to verify reachability.
 
 *B) Moveing Robot using ROS2 official package (Direct service calls)
 **1) ros2 launch jaka_driver robot_start.launch.py ip:=192.168.100.100
