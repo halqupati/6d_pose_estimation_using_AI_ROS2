@@ -76,13 +76,15 @@ Before running a program, test the movement manually:
 4-2) Safety Tip: Keep the Global Speed slider at 10% or lower for these tests.
 Free-Drive (Drag Teaching): Press the physical blue button on the robot's end-effector (or the Free-Drive button in the App). This allows you to physically push and pull the arm to the hex-nut location to verify reachability.
 
-*B) Moveing Robot using ROS2 official package (Direct service calls)
+*B) Moveing Robot using ROS2 official package  (Direct service calls)
+
 **1) ros2 launch jaka_driver robot_start.launch.py ip:=192.168.100.100
 
 
 *C) Moveig Robot to detected pose using ROS2 official package and vision pipeline
 
 **1) Launch the Planner Server (higher-level MoveIt 2 integration)
+
 ```bash
 ros2 launch jaka_planner moveit_server.launch.py ip:=192.168.100.100 model:=zu5
 ```
