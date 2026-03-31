@@ -4,7 +4,7 @@
      For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
 <robot
   name="jaka_zu5" xmlns:xacro="http://wiki.ros.org/xacro">
-  <xacro:include filename="$(find jaka_description)/urdf/gripper/robotiq_2f_85_gripper.urdf.xacro" />
+  <xacro:include filename="$(find jaka_description)/urdf/jaka_zu5_gripper/robotiq_2f_85_gripper.urdf.xacro" />
   
   <xacro:arg name="use_nominal_extrinsics" default="false"/>
   <xacro:include filename="$(find jaka_description)/urdf/sensors/_d455.urdf.xacro" />
@@ -493,9 +493,6 @@
         </actuator>
     </transmission>
  
-
-
-
     <gazebo>
         <plugin name="ignition::gazebo::systems::Sensors" filename="libignition-gazebo-sensors-system.so"> </plugin>
     </gazebo>

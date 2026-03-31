@@ -3,7 +3,12 @@
      Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
      For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
 <robot
-  name="jaka_s12">
+  name="jaka_s12" xmlns:xacro="http://wiki.ros.org/xacro">
+  <xacro:include filename="$(find jaka_description)/urdf/jaka_s12_gripper/robotiq_2f_85_gripper.urdf.xacro" />
+  
+  <xacro:arg name="use_nominal_extrinsics" default="false"/>
+  <xacro:include filename="$(find jaka_description)/urdf/sensors/_d455.urdf.xacro" />
+  <xacro:include filename="$(find jaka_description)/urdf/sensors/_d435.urdf.xacro" />
 
     <!-- LINK -->
   <link name="world" />
@@ -295,6 +300,16 @@
     </collision>
   </link>
 
+
+  <xacro:sensor_d455 name="camera" parent="world" use_nominal_extrinsics="true">
+     <origin xyz="-0.4 0.0 0.7" rpy="0 ${PI/2} ${PI/2}"/>
+   </xacro:sensor_d455>
+   
+  <xacro:sensor_d435 name="mounted_camera" parent="Link_06" use_nominal_extrinsics="true">
+     <!-- <origin xyz="0.0 -0.08 -0.04" rpy=" 0 -${PI/2} -${PI/2} " /> -->
+     <origin xyz="0.0 -0.085 -0.04" rpy=" 0 -${PI/2} -${PI/2} " />
+  </xacro:sensor_d435>
+
   <!-- JOINT -->
   <joint name="fixed" type="fixed">
      <parent link="world"/>
@@ -477,6 +492,12 @@
             <mechanicalReduction>1</mechanicalReduction>
         </actuator>
     </transmission>
+
+
+    <gazebo>
+        <plugin name="ignition::gazebo::systems::Sensors" filename="libignition-gazebo-sensors-system.so"> </plugin>
+    </gazebo>
+
     <gazebo>
         <!-- <plugin name="gazebo_ros2_control" filename="libgazebo_ros2_control.so"> -->
         <plugin name="ign_ros2_control::IgnitionROS2ControlPlugin" filename="libign_ros2_control-system.so">

@@ -5,6 +5,7 @@ moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControll
 moveit_simple_controller_manager:
   controller_names:
     - jaka_s12_controller
+    - robotiq_gripper_controller
 
   jaka_s12_controller:
     type: FollowJointTrajectory
@@ -17,6 +18,13 @@ moveit_simple_controller_manager:
       - joint_4
       - joint_5
       - joint_6
+
+  robotiq_gripper_controller:
+    type: GripperCommand # Or FollowJointTrajectory depending on your hardware interface
+    action_ns: gripper_cmd 
+    default: true
+    joints:
+      - robotiq_85_left_knuckle_joint
 
 trajectory_execution:
   allowed_execution_duration_scaling: 1.5     # or 2.0, to allow 50-100% extra time

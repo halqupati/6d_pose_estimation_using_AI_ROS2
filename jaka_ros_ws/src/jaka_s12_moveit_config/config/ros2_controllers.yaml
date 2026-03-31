@@ -6,6 +6,8 @@ controller_manager:
     jaka_s12_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
+    robotiq_gripper_controller:
+      type: position_controllers/GripperActionController
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
@@ -24,3 +26,11 @@ jaka_s12_controller:
     state_interfaces:
       - position
       - velocity
+
+
+robotiq_gripper_controller:
+  ros__parameters:
+    default: true
+    joint: robotiq_85_left_knuckle_joint
+    use_effort_interface: false
+    use_speed_interface: false
