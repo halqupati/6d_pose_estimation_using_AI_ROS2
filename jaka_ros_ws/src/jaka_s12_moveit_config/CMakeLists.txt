@@ -13,4 +13,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launch")
 endif()
 
 install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/worlds")
+  install(
+    DIRECTORY worlds
+    DESTINATION share/${PROJECT_NAME}
+  )
+endif()
 install(FILES .setup_assistant DESTINATION share/${PROJECT_NAME})
