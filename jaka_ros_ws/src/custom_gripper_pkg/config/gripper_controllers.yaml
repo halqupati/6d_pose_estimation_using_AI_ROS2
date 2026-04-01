@@ -1,0 +1,33 @@
+# gripper_controllers.yaml
+# ========================
+# ROS2 Control configuration for the gripper.
+# Place this file in:
+#   ~/ros2_ws/src/gripper_description/config/gripper_controllers.yaml
+
+controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz
+
+    # GripperActionController — exposes a /gripper_action action server
+    # Send open/close commands via:
+    #   ros2 action send_goal /gripper_action control_msgs/action/GripperCommand \
+    #     "{command: {position: -0.025, max_effort: 50.0}}"
+    #   position: 0.0    = fully closed
+    #   position: -0.025 = fully open (25mm)
+    gripper_action_controller:
+      type: position_controllers/GripperActionController
+
+    # Joint State Broadcaster — publishes /joint_states topic
+    # Required for robot_state_publisher to compute TF transforms
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+gripper_action_controller:
+  ros__parameters:
+    joint: jaw_left_joint
+    action_monitor_rate: 20.0
+    goal_tolerance: 0.001       # 1mm tolerance
+    max_effort: 50.0
+    allow_stalling: true
+    stall_velocity_threshold: 0.001
+    stall_timeout: 1.0

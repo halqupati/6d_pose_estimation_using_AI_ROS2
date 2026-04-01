@@ -1,0 +1,238 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Gripper URDF - Complete version
+  =================================
+  Changes from previous version:
+    1. TCP position corrected to (0, 0, 49mm) — exact midpoint between jaw tips
+    2. ros2_control added — allows commanding gripper from ROS2 code
+    3. Gazebo plugins added — enables physics simulation with mimic joint support
+
+  Sliding axis: X
+  jaw_left  slides -X to open  (MASTER joint)
+  jaw_right slides +X to open  (SLAVE — mimics jaw_left x -1)
+  Travel: 25mm per jaw = 50mm total opening
+-->
+<robot name="gripper">
+
+  <!-- ============================================================
+       BASE LINK — mounting flange, connect to JAKA Zu5 tool0
+       ============================================================ -->
+  <link name="base_link"/>
+
+  <joint name="base_to_body" type="fixed">
+    <parent link="base_link"/>
+    <child link="body"/>
+    <origin xyz="0.0 0.0 -0.0135" rpy="0.0 0.0 0.0"/>
+  </joint>
+
+  <!-- ============================================================
+       BODY
+       ============================================================ -->
+  <link name="body">
+    <inertial>
+      <origin xyz="0.01625 0.0 -0.03925" rpy="0.0 0.0 0.0"/>
+      <mass value="0.5"/>
+      <inertia ixx="0.00200" iyy="0.00200" izz="0.00150"
+               ixy="0.0" iyz="0.0" ixz="0.0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+      <geometry>
+        <mesh filename="package://custom_gripper_pkg/meshes/body.STL"
+              scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="gripper_grey">
+        <color rgba="0.65 0.65 0.65 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.01625 0.0 -0.03925" rpy="0.0 0.0 0.0"/>
+      <geometry>
+        <box size="0.1075 0.075 0.1055"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Gazebo material for body -->
+  <gazebo reference="body">
+    <material>Gazebo/Grey</material>
+  </gazebo>
+
+  <!-- ============================================================
+       JAW LEFT — MASTER prismatic joint (controlled by ros2_control)
+       Slides in -X to open, 0 = closed
+       ============================================================ -->
+  <joint name="jaw_left_joint" type="prismatic">
+    <parent link="body"/>
+    <child link="jaw_left"/>
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    <axis xyz="1.0 0.0 0.0"/>
+    <limit lower="-0.025" upper="0.0" effort="50.0" velocity="0.1"/>
+    <dynamics damping="1.0" friction="0.5"/>
+  </joint>
+
+  <link name="jaw_left">
+    <inertial>
+      <origin xyz="0.01499 -0.00425 0.0265" rpy="0.0 0.0 0.0"/>
+      <mass value="0.05"/>
+      <inertia ixx="3.0e-05" iyy="3.0e-05" izz="1.5e-05"
+               ixy="0.0" iyz="0.0" ixz="0.0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+      <geometry>
+        <mesh filename="package://custom_gripper_pkg/meshes/jaw_left.STL"
+              scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="gripper_dark">
+        <color rgba="0.25 0.25 0.25 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.01499 -0.00425 0.0265" rpy="0.0 0.0 0.0"/>
+      <geometry>
+        <box size="0.044 0.0195 0.045"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Gazebo contact properties for jaw_left -->
+  <gazebo reference="jaw_left">
+    <material>Gazebo/DarkGrey</material>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+
+  <!-- ============================================================
+       JAW RIGHT — SLAVE (mimics jaw_left in opposite direction)
+       Slides in +X to open automatically when jaw_left moves
+       ============================================================ -->
+  <joint name="jaw_right_joint" type="prismatic">
+    <parent link="body"/>
+    <child link="jaw_right"/>
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    <axis xyz="1.0 0.0 0.0"/>
+    <limit lower="0.0" upper="0.025" effort="50.0" velocity="0.1"/>
+    <mimic joint="jaw_left_joint" multiplier="-1" offset="0"/>
+    <dynamics damping="1.0" friction="0.5"/>
+  </joint>
+
+  <link name="jaw_right">
+    <inertial>
+      <origin xyz="-0.01499 0.00425 0.0265" rpy="0.0 0.0 0.0"/>
+      <mass value="0.05"/>
+      <inertia ixx="3.0e-05" iyy="3.0e-05" izz="1.5e-05"
+               ixy="0.0" iyz="0.0" ixz="0.0"/>
+    </inertial>
+    <visual>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+      <geometry>
+        <mesh filename="package://custom_gripper_pkg/meshes/jaw_right.STL"
+              scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="gripper_dark"/>
+    </visual>
+    <collision>
+      <origin xyz="-0.01499 0.00425 0.0265" rpy="0.0 0.0 0.0"/>
+      <geometry>
+        <box size="0.044 0.0195 0.045"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Gazebo contact properties for jaw_right -->
+  <gazebo reference="jaw_right">
+    <material>Gazebo/DarkGrey</material>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+
+  <!-- ============================================================
+       TCP — Tool Center Point
+       Verified from STL geometry: exact midpoint between jaw tips
+         X = 0.0   (symmetric between both jaws)
+         Y = 0.0   (symmetric between both jaws)
+         Z = 0.049 (top of jaws = 49mm above body origin)
+       This is the point MoveIt2 will target when picking objects.
+       ============================================================ -->
+  <joint name="tcp_joint" type="fixed">
+    <parent link="body"/>
+    <child link="tcp"/>
+    <origin xyz="0.0 0.0 0.049" rpy="0.0 0.0 0.0"/>
+  </joint>
+  <link name="tcp"/>
+
+  <!-- ============================================================
+       ROS2 CONTROL
+       Exposes jaw_left_joint as a position-controlled interface.
+       jaw_right follows automatically via mimic — no need to
+       control it separately.
+
+       Hardware interface options (set in your launch file):
+         - mock_components/GenericSystem  → for testing without real HW
+         - Your real gripper driver       → for real hardware
+       ============================================================ -->
+  <ros2_control name="GripperSystem" type="system">
+    <hardware>
+      <!-- Use mock hardware for testing in RViz/Gazebo.
+           Replace with your real gripper driver when ready. -->
+      <plugin>mock_components/GenericSystem</plugin>
+    </hardware>
+
+    <!-- Only jaw_left is commanded — jaw_right mimics it -->
+    <joint name="jaw_left_joint">
+      <!-- Position interface: send target position in meters -->
+      <command_interface name="position">
+        <param name="min">-0.025</param>
+        <param name="max">0.0</param>
+      </command_interface>
+      <!-- State interfaces: read back current position and velocity -->
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+
+    <!-- jaw_right is a mimic joint — state only, no command -->
+    <joint name="jaw_right_joint">
+      <param name="mimic">jaw_left_joint</param>
+      <param name="multiplier">-1</param>
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+  </ros2_control>
+
+  <!-- ============================================================
+       GAZEBO PLUGINS
+       ============================================================ -->
+
+  <!-- 1. ros2_control plugin — connects Gazebo physics to ROS2 control -->
+  <gazebo>
+    <plugin filename="libgazebo_ros2_control.so" name="gazebo_ros2_control">
+      <robot_sim_type>gazebo_ros2_control/GazeboSystem</robot_sim_type>
+      <parameters>$(find custom_gripper_pkg)/config/gripper_controllers.yaml</parameters>
+    </plugin>
+  </gazebo>
+
+  <!-- 2. Mimic joint plugin — makes jaw_right physically follow jaw_left in Gazebo
+       Without this, Gazebo ignores the <mimic> tag and jaws move independently -->
+  <gazebo>
+    <plugin filename="libgazebo_mimic_joint_plugin.so" name="mimic_jaw_right">
+      <joint>jaw_left_joint</joint>
+      <mimicJoint>jaw_right_joint</mimicJoint>
+      <multiplier>-1.0</multiplier>
+      <offset>0.0</offset>
+      <sensitiveness>0.0</sensitiveness>
+      <maxEffort>50.0</maxEffort>
+    </plugin>
+  </gazebo>
+
+</robot>
