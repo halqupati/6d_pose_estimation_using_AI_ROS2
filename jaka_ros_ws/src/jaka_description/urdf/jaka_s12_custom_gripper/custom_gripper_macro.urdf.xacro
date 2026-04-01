@@ -1,0 +1,185 @@
+<?xml version="1.0"?>
+<!--
+  Custom 2-Finger Parallel Jaw Gripper — Xacro Macro
+  =====================================================
+  Attaches the custom gripper to a parent link (Link_06 of JAKA S12).
+
+  Sliding axis  : X
+  jaw_left  slides -X to open  (MASTER — commanded by ros2_control)
+  jaw_right slides +X to open  (SLAVE  — mimics jaw_left × -1)
+  Travel    : 25 mm per jaw = 50 mm total opening
+  TCP       : 49 mm above body origin (midpoint between jaw tips)
+
+  Parameters:
+    parent  : parent link name  (e.g. "Link_06")
+    prefix  : string prefix applied to every link/joint name (default: "")
+    *origin : xacro block — <origin xyz="..." rpy="..."/>
+
+  NOTE: ros2_control interfaces are declared in jaka_s12.ros2_control.xacro.
+        The Ignition Gazebo plugin already loaded by jaka_s12.urdf handles
+        all physics; no additional Gazebo plugin block is needed here.
+-->
+<robot xmlns:xacro="http://wiki.ros.org/xacro">
+
+  <xacro:macro name="custom_gripper" params="parent prefix:='' *origin">
+
+    <!-- ============================================================
+         MOUNTING JOINT: robot flange → gripper_base_link
+         ============================================================ -->
+    <joint name="${prefix}gripper_base_joint" type="fixed">
+      <parent link="${parent}"/>
+      <child  link="${prefix}gripper_base_link"/>
+      <xacro:insert_block name="origin"/>
+    </joint>
+
+    <link name="${prefix}gripper_base_link"/>
+
+    <!-- ============================================================
+         BODY
+         ============================================================ -->
+    <joint name="${prefix}base_to_body" type="fixed">
+      <parent link="${prefix}gripper_base_link"/>
+      <child  link="${prefix}body"/>
+      <origin xyz="0.0 0.0 -0.0135" rpy="0.0 0.0 0.0"/>
+    </joint>
+
+    <link name="${prefix}body">
+      <inertial>
+        <origin xyz="0.01625 0.0 -0.03925" rpy="0.0 0.0 0.0"/>
+        <mass value="0.5"/>
+        <inertia ixx="0.00200" iyy="0.00200" izz="0.00150"
+                 ixy="0.0"    iyz="0.0"    ixz="0.0"/>
+      </inertial>
+      <visual>
+        <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+        <geometry>
+          <mesh filename="package://custom_gripper_pkg/meshes/body.STL"
+                scale="0.001 0.001 0.001"/>
+        </geometry>
+        <material name="gripper_grey">
+          <color rgba="0.65 0.65 0.65 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0.01625 0.0 -0.03925" rpy="0.0 0.0 0.0"/>
+        <geometry>
+          <box size="0.1075 0.075 0.1055"/>
+        </geometry>
+      </collision>
+    </link>
+
+    <gazebo reference="${prefix}body">
+      <material>Gazebo/Grey</material>
+    </gazebo>
+
+    <!-- ============================================================
+         JAW LEFT — MASTER prismatic joint (commanded by ros2_control)
+         Slides in -X direction to open; 0 = fully closed
+         ============================================================ -->
+    <joint name="${prefix}jaw_left_joint" type="prismatic">
+      <parent link="${prefix}body"/>
+      <child  link="${prefix}jaw_left"/>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+      <axis xyz="1.0 0.0 0.0"/>
+      <limit lower="-0.025" upper="0.0" effort="50.0" velocity="0.1"/>
+      <dynamics damping="1.0" friction="0.5"/>
+    </joint>
+
+    <link name="${prefix}jaw_left">
+      <inertial>
+        <origin xyz="0.01499 -0.00425 0.0265" rpy="0.0 0.0 0.0"/>
+        <mass value="0.05"/>
+        <inertia ixx="3.0e-05" iyy="3.0e-05" izz="1.5e-05"
+                 ixy="0.0"    iyz="0.0"    ixz="0.0"/>
+      </inertial>
+      <visual>
+        <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+        <geometry>
+          <mesh filename="package://custom_gripper_pkg/meshes/jaw_left.STL"
+                scale="0.001 0.001 0.001"/>
+        </geometry>
+        <material name="gripper_dark">
+          <color rgba="0.25 0.25 0.25 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0.01499 -0.00425 0.0265" rpy="0.0 0.0 0.0"/>
+        <geometry>
+          <box size="0.044 0.0195 0.045"/>
+        </geometry>
+      </collision>
+    </link>
+
+    <gazebo reference="${prefix}jaw_left">
+      <material>Gazebo/DarkGrey</material>
+      <kp>1000000.0</kp>
+      <kd>100.0</kd>
+      <mu1>1.0</mu1>
+      <mu2>1.0</mu2>
+      <minDepth>0.001</minDepth>
+    </gazebo>
+
+    <!-- ============================================================
+         JAW RIGHT — SLAVE mimic joint (follows jaw_left × -1)
+         Slides in +X direction automatically when jaw_left opens
+         ============================================================ -->
+    <joint name="${prefix}jaw_right_joint" type="prismatic">
+      <parent link="${prefix}body"/>
+      <child  link="${prefix}jaw_right"/>
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+      <axis xyz="1.0 0.0 0.0"/>
+      <limit lower="0.0" upper="0.025" effort="50.0" velocity="0.1"/>
+      <mimic joint="${prefix}jaw_left_joint" multiplier="-1" offset="0"/>
+      <dynamics damping="1.0" friction="0.5"/>
+    </joint>
+
+    <link name="${prefix}jaw_right">
+      <inertial>
+        <origin xyz="-0.01499 0.00425 0.0265" rpy="0.0 0.0 0.0"/>
+        <mass value="0.05"/>
+        <inertia ixx="3.0e-05" iyy="3.0e-05" izz="1.5e-05"
+                 ixy="0.0"    iyz="0.0"    ixz="0.0"/>
+      </inertial>
+      <visual>
+        <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+        <geometry>
+          <mesh filename="package://custom_gripper_pkg/meshes/jaw_right.STL"
+                scale="0.001 0.001 0.001"/>
+        </geometry>
+        <material name="gripper_dark"/>
+      </visual>
+      <collision>
+        <origin xyz="-0.01499 0.00425 0.0265" rpy="0.0 0.0 0.0"/>
+        <geometry>
+          <box size="0.044 0.0195 0.045"/>
+        </geometry>
+      </collision>
+    </link>
+
+    <gazebo reference="${prefix}jaw_right">
+      <material>Gazebo/DarkGrey</material>
+      <kp>1000000.0</kp>
+      <kd>100.0</kd>
+      <mu1>1.0</mu1>
+      <mu2>1.0</mu2>
+      <minDepth>0.001</minDepth>
+    </gazebo>
+
+    <!-- ============================================================
+         TCP — Tool Center Point
+         X = 0.0  (symmetric between both jaws)
+         Y = 0.0  (symmetric between both jaws)
+         Z = 0.049 (top of jaws = 49 mm above body origin)
+         MoveIt2 targets this frame when planning pick poses.
+         ============================================================ -->
+    <joint name="${prefix}tcp_joint" type="fixed">
+      <parent link="${prefix}body"/>
+      <child  link="${prefix}tcp"/>
+      <origin xyz="0.0 0.0 0.049" rpy="0.0 0.0 0.0"/>
+    </joint>
+
+    <link name="${prefix}tcp"/>
+
+  </xacro:macro>
+
+</robot>

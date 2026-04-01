@@ -1,4 +1,10 @@
-# This config file is used by ros2_control
+# ros2_controllers.yaml — JAKA S12 + Custom Gripper
+# ===================================================
+# Controls:
+#   jaka_s12_controller      : arm (joint_1 … joint_6)
+#   custom_gripper_controller: gripper (jaw_left_joint)
+#   joint_state_broadcaster  : publishes /joint_states
+
 controller_manager:
   ros__parameters:
     update_rate: 1000  # Hz
@@ -6,11 +12,12 @@ controller_manager:
     jaka_s12_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
-    robotiq_gripper_controller:
-      type: position_controllers/GripperActionController
+    custom_gripper_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
+
 
 jaka_s12_controller:
   ros__parameters:
@@ -28,9 +35,12 @@ jaka_s12_controller:
       - velocity
 
 
-robotiq_gripper_controller:
+custom_gripper_controller:
   ros__parameters:
-    default: true
-    joint: robotiq_85_left_knuckle_joint
-    use_effort_interface: false
-    use_speed_interface: false
+    joints:
+      - jaw_left_joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity

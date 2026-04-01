@@ -30,6 +30,7 @@
   
   #Add
   <exec_depend>depth_image_proc</exec_depend>
+  <exec_depend>custom_gripper_pkg</exec_depend>
 
   <!-- The export tag contains other, unspecified, tags -->
   <export>
