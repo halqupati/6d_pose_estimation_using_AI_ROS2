@@ -1,11 +1,14 @@
-# MoveIt uses this configuration for controller management
+# moveit_controllers.yaml — JAKA S12 + Custom Gripper
+# =====================================================
+# MoveIt controller manager configuration.
+# Maps MoveIt planning groups to ros2_control action servers.
 
 moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
 
 moveit_simple_controller_manager:
   controller_names:
     - jaka_s12_controller
-    - robotiq_gripper_controller
+    - custom_gripper_controller
 
   jaka_s12_controller:
     type: FollowJointTrajectory
@@ -19,16 +22,16 @@ moveit_simple_controller_manager:
       - joint_5
       - joint_6
 
-  robotiq_gripper_controller:
-    type: GripperCommand # Or FollowJointTrajectory depending on your hardware interface
-    action_ns: gripper_cmd 
+  custom_gripper_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
     default: true
     joints:
-      - robotiq_85_left_knuckle_joint
+      - jaw_left_joint
 
 trajectory_execution:
-  allowed_execution_duration_scaling: 1.5     # or 2.0, to allow 50-100% extra time
-  allowed_goal_duration_margin: 2.0          # extra seconds to wait
-  allowed_start_tolerance: 0.01  # Increase tolerance to reduce validation delay
+  allowed_execution_duration_scaling: 1.5
+  allowed_goal_duration_margin: 2.0
+  allowed_start_tolerance: 0.01
   execution_duration_monitoring: false
   moveit_manage_controllers: true

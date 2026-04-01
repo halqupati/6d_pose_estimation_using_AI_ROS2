@@ -1,149 +1,110 @@
 <?xml version="1.0"?>
+<!--
+  ros2_control hardware interfaces for JAKA S12 + Custom Gripper
+  ==============================================================
+  Declares:
+    - 6 arm joints (joint_1 … joint_6) with position command + state
+    - jaw_left_joint  : master prismatic joint (position command + state)
+    - jaw_right_joint : slave mimic joint (state only, follows jaw_left × -1)
+
+  Hardware plugin selection (set via launch args):
+    use_gazebo=true   → gz_ros2_control/GazeboSimSystem  (Ignition Gazebo)
+    use_rviz_sim=true → mock_components/GenericSystem     (RViz-only testing)
+-->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
-    <xacro:arg name="prefix" default=""/> 
+    <xacro:arg name="prefix" default=""/>
+
     <xacro:macro name="jaka_s12_ros2_control" params="
-        name 
-        initial_positions_file 
-        use_gazebo 
+        name
+        initial_positions_file
+        use_gazebo
         use_rviz_sim:=false
         prefix
         sim_ignition:=true
         use_fake_hardware:=false
-        mock_sensor_commands:=false
-        com_port:=/dev/ttyUSB0
-        gripper_speed_multiplier:=1.0
-        gripper_force_multiplier:=0.5
-        gripper_max_speed:=0.150
-        gripper_max_force:=235.0
-        gripper_closed_position:=0.7929">
-        <xacro:property name="initial_positions" value="${xacro.load_yaml(initial_positions_file)['initial_positions']}"/>
+        mock_sensor_commands:=false">
 
+        <xacro:property name="initial_positions"
+            value="${xacro.load_yaml(initial_positions_file)['initial_positions']}"/>
 
         <ros2_control name="${name}" type="system">
-            <!-- Include hardware plugin conditionally if rviz in simulation mode is enabled -->
+
+            <!-- Hardware plugin -->
             <hardware>
-              <xacro:if value="${use_gazebo}">
-                  <!-- <plugin>gazebo_ros2_control/GazeboSystem</plugin> -->
-                  <plugin>gz_ros2_control/GazeboSimSystem</plugin>
-              </xacro:if>      
-              <xacro:if value="${use_rviz_sim}">
-                  <plugin>mock_components/GenericSystem</plugin>
-              </xacro:if>        
+                <xacro:if value="${use_gazebo}">
+                    <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+                </xacro:if>
+                <xacro:if value="${use_rviz_sim}">
+                    <plugin>mock_components/GenericSystem</plugin>
+                </xacro:if>
             </hardware>
 
-            <!-- Joint interfaces generated for each joint -->
+            <!-- ── Arm joints ─────────────────────────────────────────── -->
             <joint name="joint_1">
                 <command_interface name="position"/>
                 <state_interface name="position">
-                  <param name="initial_value">${initial_positions['joint_1']}</param>
+                    <param name="initial_value">${initial_positions['joint_1']}</param>
                 </state_interface>
                 <state_interface name="velocity"/>
             </joint>
             <joint name="joint_2">
                 <command_interface name="position"/>
                 <state_interface name="position">
-                  <param name="initial_value">${initial_positions['joint_2']}</param>
+                    <param name="initial_value">${initial_positions['joint_2']}</param>
                 </state_interface>
                 <state_interface name="velocity"/>
             </joint>
             <joint name="joint_3">
                 <command_interface name="position"/>
                 <state_interface name="position">
-                  <param name="initial_value">${initial_positions['joint_3']}</param>
+                    <param name="initial_value">${initial_positions['joint_3']}</param>
                 </state_interface>
                 <state_interface name="velocity"/>
             </joint>
             <joint name="joint_4">
                 <command_interface name="position"/>
                 <state_interface name="position">
-                  <param name="initial_value">${initial_positions['joint_4']}</param>
+                    <param name="initial_value">${initial_positions['joint_4']}</param>
                 </state_interface>
                 <state_interface name="velocity"/>
             </joint>
             <joint name="joint_5">
                 <command_interface name="position"/>
                 <state_interface name="position">
-                  <param name="initial_value">${initial_positions['joint_5']}</param>
+                    <param name="initial_value">${initial_positions['joint_5']}</param>
                 </state_interface>
                 <state_interface name="velocity"/>
             </joint>
             <joint name="joint_6">
                 <command_interface name="position"/>
                 <state_interface name="position">
-                  <param name="initial_value">${initial_positions['joint_6']}</param>
+                    <param name="initial_value">${initial_positions['joint_6']}</param>
                 </state_interface>
                 <state_interface name="velocity"/>
             </joint>
 
-
-
-                 
-            
-            <!-- Joint interfaces -->
-            <!-- With Ignition or Hardware, they handle mimic joints, so we only need this command interface activated -->
-            <joint name="${prefix}robotiq_85_left_knuckle_joint">
-                <command_interface name="position" />
+            <!-- ── Custom gripper joints ──────────────────────────────── -->
+            <!-- jaw_left is the MASTER joint: commanded via position interface -->
+            <joint name="${prefix}jaw_left_joint">
+                <command_interface name="position">
+                    <param name="min">-0.025</param>
+                    <param name="max">0.0</param>
+                </command_interface>
                 <state_interface name="position">
-                    <param name="initial_value">${gripper_closed_position}</param>
+                    <param name="initial_value">0.0</param>
                 </state_interface>
                 <state_interface name="velocity"/>
             </joint>
-            <!-- When simulating we need to include the rest of the gripper joints -->
-            <xacro:if value="${use_fake_hardware or sim_ignition}">
-                <joint name="${prefix}robotiq_85_right_knuckle_joint">
-                    <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
-                    <param name="multiplier">-1</param>
-                    <xacro:unless value="${sim_ignition}">
-                        <command_interface name="position"/>
-                        <state_interface name="position"/>
-                        <state_interface name="velocity"/>
-                    </xacro:unless>
-                </joint>
-                <joint name="${prefix}robotiq_85_left_inner_knuckle_joint">
-                    <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
-                    <param name="multiplier">1</param>
-                    <xacro:unless value="${sim_ignition}">
-                        <command_interface name="position"/>
-                        <state_interface name="position"/>
-                        <state_interface name="velocity"/>
-                    </xacro:unless>
-                </joint>
-                <joint name="${prefix}robotiq_85_right_inner_knuckle_joint">
-                    <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
-                    <param name="multiplier">-1</param>
-                    <xacro:unless value="${sim_ignition}">
-                        <command_interface name="position"/>
-                        <state_interface name="position"/>
-                        <state_interface name="velocity"/>
-                    </xacro:unless>
-                </joint>
-                <joint name="${prefix}robotiq_85_left_finger_tip_joint">
-                    <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
-                    <param name="multiplier">-1</param>
-                    <xacro:unless value="${sim_ignition}">
-                        <command_interface name="position"/>
-                        <state_interface name="position"/>
-                        <state_interface name="velocity"/>
-                    </xacro:unless>
-                </joint>
-                <joint name="${prefix}robotiq_85_right_finger_tip_joint">
-                    <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
-                    <param name="multiplier">1</param>
-                    <xacro:unless value="${sim_ignition}">
-                        <command_interface name="position"/>
-                        <state_interface name="position"/>
-                        <state_interface name="velocity"/>
-                    </xacro:unless>
-                </joint>
-            </xacro:if>
 
-            <!-- Only add this with fake hardware mode -->
-            <xacro:unless value="${sim_ignition or sim_isaac}">
-                <gpio name="reactivate_gripper">
-                    <command_interface name="reactivate_gripper_cmd" />
-                    <command_interface name="reactivate_gripper_response" />
-                </gpio>
-            </xacro:unless>
+            <!-- jaw_right is the SLAVE mimic joint: state only, no command needed -->
+            <joint name="${prefix}jaw_right_joint">
+                <param name="mimic">${prefix}jaw_left_joint</param>
+                <param name="multiplier">-1</param>
+                <state_interface name="position">
+                    <param name="initial_value">0.0</param>
+                </state_interface>
+                <state_interface name="velocity"/>
+            </joint>
 
         </ros2_control>
     </xacro:macro>

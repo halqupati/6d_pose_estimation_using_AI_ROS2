@@ -38,6 +38,11 @@ joint_limits:
     max_velocity: 1.57
     has_acceleration_limits: true
     max_acceleration: 2.0
+  jaw_left_joint:
+    has_velocity_limits: true
+    max_velocity: 0.1
+    has_acceleration_limits: true
+    max_acceleration: 0.5
 
 # Pilz Cartesian limits (used by the pilz_industrial_motion_planner)
 cartesian_limits:

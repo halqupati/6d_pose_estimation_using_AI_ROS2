@@ -176,7 +176,7 @@ def generate_launch_description():
     # Load controllers
     # -------------------------
     load_controllers = []
-    for controller in ["jaka_s12_controller", "joint_state_broadcaster" ]:
+    for controller in ["jaka_s12_controller", "custom_gripper_controller", "joint_state_broadcaster"]:
         load_controllers.append(
             ExecuteProcess(
                 cmd=["ros2", "run", "controller_manager", "spawner", controller],
