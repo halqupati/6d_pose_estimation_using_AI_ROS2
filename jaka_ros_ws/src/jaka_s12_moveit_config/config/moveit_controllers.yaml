@@ -27,7 +27,7 @@ moveit_simple_controller_manager:
     action_ns: follow_joint_trajectory
     default: true
     joints:
-      - jaw_left_joint
+      - gripper_jaw_left_joint
 
 trajectory_execution:
   allowed_execution_duration_scaling: 1.5

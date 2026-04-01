@@ -38,7 +38,7 @@ jaka_s12_controller:
 custom_gripper_controller:
   ros__parameters:
     joints:
-      - jaw_left_joint
+      - gripper_jaw_left_joint
     command_interfaces:
       - position
     state_interfaces:

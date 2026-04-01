@@ -39,7 +39,7 @@
                 </xacro:if>
             </hardware>
 
-            <!-- ── Arm joints ─────────────────────────────────────────── -->
+            <!-- ── Arm joints ( Joint interfaces generated for each joint of ARM) ─────────────────────────────────────────── -->
             <joint name="joint_1">
                 <command_interface name="position"/>
                 <state_interface name="position">
@@ -83,9 +83,12 @@
                 <state_interface name="velocity"/>
             </joint>
 
+
             <!-- ── Custom gripper joints ──────────────────────────────── -->
             <!-- jaw_left is the MASTER joint: commanded via position interface -->
-            <joint name="${prefix}jaw_left_joint">
+            <!-- Custom gripper: jaw_left is master (commanded) -->
+
+            <joint name="${prefix}gripper_jaw_left_joint">
                 <command_interface name="position">
                     <param name="min">-0.025</param>
                     <param name="max">0.0</param>
@@ -97,8 +100,8 @@
             </joint>
 
             <!-- jaw_right is the SLAVE mimic joint: state only, no command needed -->
-            <joint name="${prefix}jaw_right_joint">
-                <param name="mimic">${prefix}jaw_left_joint</param>
+            <joint name="${prefix}gripper_jaw_right_joint">
+                <param name="mimic">${prefix}gripper_jaw_left_joint</param>
                 <param name="multiplier">-1</param>
                 <state_interface name="position">
                     <param name="initial_value">0.0</param>

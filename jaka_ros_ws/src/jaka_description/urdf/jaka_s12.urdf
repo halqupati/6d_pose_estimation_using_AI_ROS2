@@ -4,7 +4,15 @@
      For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
 <robot
   name="jaka_s12" xmlns:xacro="http://wiki.ros.org/xacro">
-  <xacro:include filename="$(find jaka_description)/urdf/jaka_s12_custom_gripper/custom_gripper.urdf.xacro" />
+  <!-- OLD: Robotiq gripper -->
+  <!-- <xacro:include filename="$(find jaka_description)/urdf/jaka_s12_gripper/robotiq_2f_85_gripper.urdf.xacro" /> -->
+
+  <!-- NEW: Custom gripper -->
+  <xacro:include filename="$(find custom_gripper_pkg)/urdf/custom_gripper_macro.urdf.xacro" />
+  
+  <xacro:custom_gripper parent="Link_06" prefix="">
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+  </xacro:custom_gripper>
   
   <xacro:arg name="use_nominal_extrinsics" default="false"/>
   <xacro:include filename="$(find jaka_description)/urdf/sensors/_d455.urdf.xacro" />
