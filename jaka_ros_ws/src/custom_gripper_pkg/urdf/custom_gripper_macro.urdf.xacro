@@ -40,7 +40,7 @@
     <joint name="${prefix}gripper_base_to_body_joint" type="fixed">
       <parent link="${prefix}gripper_base_link"/>
       <child  link="${prefix}gripper_body_link"/>
-      <origin xyz="0.0 0.0 -0.0135" rpy="0.0 0.0 0.0"/>
+      <origin xyz="0.0 0.0 0.09" rpy="0.0 0.0 0.0"/>
     </joint>
 
     <!-- ============================================================
@@ -132,7 +132,7 @@
       <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
       <axis xyz="1.0 0.0 0.0"/>
       <limit lower="0.0" upper="0.025" effort="50.0" velocity="0.1"/>
-      <mimic joint="${prefix}jaw_left_joint" multiplier="-1" offset="0"/>
+      <mimic joint="${prefix}gripper_jaw_left_joint" multiplier="-1" offset="0"/>
       <dynamics damping="1.0" friction="0.5"/>
     </joint>
 

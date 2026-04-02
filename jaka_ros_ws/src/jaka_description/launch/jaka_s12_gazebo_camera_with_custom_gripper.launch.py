@@ -27,15 +27,15 @@ def generate_launch_description():
 
     models_path = os.path.join(get_package_share_directory('jaka_description'), 'worlds')
 
-
     gazebo_resource_path = SetEnvironmentVariable(
-    name='IGN_GAZEBO_RESOURCE_PATH',
-    value=[
-        os.path.join(robot_description_path, 'worlds'),
-        ':' + str(Path(robot_description_path).parent.resolve()),
-        ':' + str(Path(custom_gripper_path).parent.resolve())
-    ]
-)
+        name='IGN_GAZEBO_RESOURCE_PATH',
+        value=[
+            models_path,                                                       # world SDF models (nut, checkerboard, etc.)
+            ':' + os.path.join(moveit_config_pkg, 'worlds'),                   # jaka_s12_moveit_config/worlds models
+            ':' + str(Path(robot_description_path).parent.resolve()),          # → model://jaka_description/
+            ':' + str(Path(custom_gripper_path).parent.resolve())              # → model://custom_gripper_pkg/
+    ])
+
 
     world_path = PathJoinSubstitution([
         FindPackageShare("jaka_description"),  # Replace with your package name
@@ -57,17 +57,6 @@ def generate_launch_description():
             {'use_sim_time': True}
         ]
     )
-
-    static_tf = Node(
-        package="tf2_ros",
-        executable="static_transform_publisher",
-        name="static_transform_publisher",
-        output="log",
-        arguments=["--frame-id", "world", "--child-frame-id", "base_link"],
-        parameters=[{"use_sim_time": True}],
-    )
-
-
 
 
     rviz_node = Node(
@@ -93,10 +82,10 @@ def generate_launch_description():
         arguments=["jaka_s12_controller", "-c", "/controller_manager"],
     )
 
-    robotiq_gripper_controller = Node(
+    custom_gripper_controller = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["robotiq_gripper_controller", "--controller-manager", "/controller_manager"],
+        arguments=["custom_gripper_controller", "--controller-manager", "/controller_manager"],
     
     )
 
@@ -158,7 +147,7 @@ def generate_launch_description():
         rviz_node,
         joint_state_broadcaster,
         jaka_s12_controller,
-        robotiq_gripper_controller,
+        custom_gripper_controller,
         gz_spawn_entity,
         gz_launch_description_with_gui,
         gz_sim_bridge,
