@@ -76,9 +76,10 @@
     <disable_collisions link1="Link_04" link2="Link_06"      reason="Never"/>
     <disable_collisions link1="Link_05" link2="Link_06"      reason="Adjacent"/>
     
+    <passive_joint name="gripper_jaw_right_joint"/>
     <!-- Gripper mount chain -->
-    <disable_collisions link1="Link_06"          link2="gripper_base_link" reason="Adjacent"/>
-    <disable_collisions link1="gripper_base_link" link2="gripper_body_link"             reason="Adjacent"/>
+    <disable_collisions link1="Link_06"                       link2="gripper_base_link"              reason="Adjacent"/>
+    <disable_collisions link1="gripper_base_link"             link2="gripper_body_link"              reason="Adjacent"/>
     <disable_collisions link1="gripper_body_link"             link2="gripper_jaw_left_link"          reason="Adjacent"/>
     <disable_collisions link1="gripper_body_link"             link2="gripper_jaw_right_link"         reason="Adjacent"/>
     <disable_collisions link1="gripper_jaw_left_link"         link2="gripper_jaw_right_link"         reason="Adjacent"/>
