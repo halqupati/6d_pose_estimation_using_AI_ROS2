@@ -85,8 +85,15 @@
 
 
             <!-- ── Custom gripper joints ──────────────────────────────── -->
-            <!-- jaw_left is the MASTER joint: commanded via position interface -->
-            <!-- Custom gripper: jaw_left is master (commanded) -->
+            <!-- jaw_left is the MASTER joint: commanded via position interface.
+                 jaw_right is a mimic joint whose relationship is declared in
+                 the URDF via the <mimic> tag. ros2_control (Humble+) auto-
+                 detects the mimic relationship from the URDF, so the legacy
+                 <param name="mimic"> / <param name="multiplier"> block must
+                 NOT be used here — otherwise gz_ros2_control registers a
+                 duplicate state interface named "<joint>_mimic", which breaks
+                 MoveIt's robot_model lookup.
+                 See ros-controls/gazebo_ros2_control#173 -->
 
             <joint name="${prefix}gripper_jaw_left_joint">
                 <command_interface name="position">
@@ -99,14 +106,12 @@
                 <state_interface name="velocity"/>
             </joint>
 
-            <!-- jaw_right is the SLAVE mimic joint: state only, no command needed -->
+            <!-- jaw_right: no command_interface (mimic joint, command-less) -->
             <joint name="${prefix}gripper_jaw_right_joint">
-                <param name="mimic">${prefix}gripper_jaw_left_joint</param>
-                <param name="multiplier">-1</param>
-                    <state_interface name="position">
-                     <param name="initial_value">0.0</param>
-                    </state_interface>
-                    <state_interface name="velocity"/>
+                <state_interface name="position">
+                    <param name="initial_value">0.0</param>
+                </state_interface>
+                <state_interface name="velocity"/>
             </joint>
 
         </ros2_control>
