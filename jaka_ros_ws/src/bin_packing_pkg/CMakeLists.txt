@@ -26,6 +26,7 @@ set(executable_list
   bin_picking_node_v2
   bin_picking_node_v1
   bin_picking_node_copy
+  joint_states_filter_node
 
 )
 

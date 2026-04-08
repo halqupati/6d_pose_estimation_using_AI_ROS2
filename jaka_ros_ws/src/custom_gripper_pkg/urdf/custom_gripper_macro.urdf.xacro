@@ -84,7 +84,7 @@
       <child  link="${prefix}gripper_jaw_left_link"/>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
       <axis xyz="1.0 0.0 0.0"/>
-      <limit lower="-0.025" upper="0.0" effort="50.0" velocity="0.1"/>
+      <limit lower="-0.026" upper="0.001" effort="50.0" velocity="0.4"/>
       <dynamics damping="1.0" friction="0.5"/>
     </joint>
 
@@ -131,7 +131,7 @@
       <child  link="${prefix}gripper_jaw_right_link"/>
       <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
       <axis xyz="1.0 0.0 0.0"/>
-      <limit lower="0.0" upper="0.025" effort="50.0" velocity="0.1"/>
+      <limit lower="-0.001" upper="0.026" effort="50.0" velocity="0.4"/>
       <mimic joint="${prefix}gripper_jaw_left_joint" multiplier="-1" offset="0"/>
       <dynamics damping="1.0" friction="0.5"/>
     </joint>

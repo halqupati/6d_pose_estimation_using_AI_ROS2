@@ -63,3 +63,4 @@ joint_state_broadcaster:
       - joint_5
       - joint_6
       - gripper_jaw_left_joint
+      - gripper_jaw_right_joint

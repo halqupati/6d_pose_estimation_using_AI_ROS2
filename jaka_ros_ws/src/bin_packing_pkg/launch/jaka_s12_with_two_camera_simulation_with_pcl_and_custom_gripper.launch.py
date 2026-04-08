@@ -99,6 +99,10 @@ def generate_launch_description():
         package="moveit_ros_move_group",
         executable="move_group",
         output="screen",
+        remappings=[
+            ("/joint_states", "/joint_states_filtered"),
+            ("joint_states", "/joint_states_filtered"),
+        ],
         parameters=[
             moveit_config.to_dict(),
             {
@@ -109,7 +113,7 @@ def generate_launch_description():
                     "default_planner_request_adapters/FixStartStatePathConstraints "
                     "default_planner_request_adapters/AddTimeOptimalParameterization"
                 ),
-                "ompl.start_state_max_bounds_error": 0.1,
+                "ompl.start_state_max_bounds_error": 0.001,
             
                 'use_sim_time': True},
         ],
@@ -121,6 +125,10 @@ def generate_launch_description():
         name="rviz2",
         output="log",
         arguments=["-d", rviz_config_file],
+        remappings=[
+            ("/joint_states", "/joint_states_filtered"),
+            ("joint_states", "/joint_states_filtered"),
+        ],
         parameters=[
             moveit_config.robot_description,
             moveit_config.robot_description_semantic,
@@ -129,6 +137,14 @@ def generate_launch_description():
             moveit_config.joint_limits,
             {'use_sim_time': True}
         ],
+    )
+
+    joint_states_filter_node = Node(
+        package="bin_packing_pkg",
+        executable="joint_states_filter_node",
+        name="joint_states_filter_node",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
     )
 
     jaka_zu5_controller_spawner = Node(
@@ -225,6 +241,7 @@ def generate_launch_description():
     return LaunchDescription([
         gazebo_resource_path,
         robot_state_publisher_node,
+        joint_states_filter_node,
         run_move_group_node,
         rviz_node,
         joint_state_broadcaster_spawner,
