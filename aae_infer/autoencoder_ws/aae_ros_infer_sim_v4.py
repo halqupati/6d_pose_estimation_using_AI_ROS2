@@ -11,6 +11,17 @@ from auto_pose.ae import factory, utils
 
 app = flask.Flask(__name__)
 
+
+def get_env_int(name, default):
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    try:
+        return int(raw_value)
+    except ValueError:
+        print(f"[{datetime.now()}] Invalid integer for {name}={raw_value!r}; using {default}")
+        return default
+
 # === Configuration ===
 workspace_path = os.environ.get('AE_WORKSPACE_PATH')
 if workspace_path is None:
@@ -18,6 +29,9 @@ if workspace_path is None:
 
 experiment_name = 'my_autoencoder'
 experiment_group = 'exp_group'
+server_host = os.environ.get("AAE_SERVER_HOST", "0.0.0.0")
+server_port = get_env_int("AAE_SERVER_PORT", 5001)
+health_host = os.environ.get("AAE_HEALTH_HOST", "localhost")
 
 # === Load Model (once at startup) ===
 print(f"[{datetime.now()}] Loading AutoEncoder codebook...")
@@ -117,10 +131,10 @@ def health():
 
 if __name__ == '__main__':
     print("Starting Flask server with threaded=True (concurrent requests enabled)")
-    print("Access health check at http://localhost:5001/health")
+    print(f"Access health check at http://{health_host}:{server_port}/health")
     app.run(
-        host='0.0.0.0',
-        port=5001,
+        host=server_host,
+        port=server_port,
         debug=False,
         threaded=True,        # ← Critical fix for continuous operation
         use_reloader=False    # Prevent double-loading in some environments
