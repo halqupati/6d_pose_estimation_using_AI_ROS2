@@ -136,10 +136,10 @@ def generate_launch_description():
         arguments=["jaka_s12_controller", "-c", "/controller_manager"],
     )
 
-    robotiq_gripper_controller_spawner = Node(
+    custom_gripper_controller_spawner = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["robotiq_gripper_controller", "--controller-manager", "/controller_manager"],
+        arguments=["custom_gripper_controller", "--controller-manager", "/controller_manager"],
     )
 
     gz_spawn_entity = Node(
@@ -221,7 +221,7 @@ def generate_launch_description():
         rviz_node,
         joint_state_broadcaster_spawner,
         jaka_zu5_controller_spawner,
-        robotiq_gripper_controller_spawner,
+        custom_gripper_controller_spawner,
         gz_spawn_entity,
         gz_launch_description_with_gui,
         gz_sim_bridge,
