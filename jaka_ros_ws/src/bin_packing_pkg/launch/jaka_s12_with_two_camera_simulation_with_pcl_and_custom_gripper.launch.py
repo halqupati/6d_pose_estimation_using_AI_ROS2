@@ -99,10 +99,6 @@ def generate_launch_description():
         package="moveit_ros_move_group",
         executable="move_group",
         output="screen",
-        remappings=[
-            ("/joint_states", "/joint_states_filtered"),
-            ("joint_states", "/joint_states_filtered"),
-        ],
         parameters=[
             moveit_config.to_dict(),
             {
@@ -125,10 +121,6 @@ def generate_launch_description():
         name="rviz2",
         output="log",
         arguments=["-d", rviz_config_file],
-        remappings=[
-            ("/joint_states", "/joint_states_filtered"),
-            ("joint_states", "/joint_states_filtered"),
-        ],
         parameters=[
             moveit_config.robot_description,
             moveit_config.robot_description_semantic,
@@ -137,14 +129,6 @@ def generate_launch_description():
             moveit_config.joint_limits,
             {'use_sim_time': True}
         ],
-    )
-
-    joint_states_filter_node = Node(
-        package="bin_packing_pkg",
-        executable="joint_states_filter_node",
-        name="joint_states_filter_node",
-        output="screen",
-        parameters=[{"use_sim_time": True}],
     )
 
     jaka_zu5_controller_spawner = Node(
@@ -221,27 +205,9 @@ def generate_launch_description():
         ]
     )
 
-    # Point Cloud Filter (New Custom Node)
-    pcl_filter_node = Node(
-        package='jaka_s12_moveit_config', # Replace with your package name
-        executable='statistical_filter_node',
-        name='statistical_outlier_removal',
-        output='screen',
-        remappings=[
-            ('input', '/rgbd_camera/points'),
-            ('output', '/rgbd_camera/points_filtered_external')
-        ],
-        parameters=[
-            {'mean_k': 50},
-            {'stddev_mul_thresh': 1.0},
-            {'use_sim_time': True}
-        ]
-    )
-
     return LaunchDescription([
         gazebo_resource_path,
         robot_state_publisher_node,
-        joint_states_filter_node,
         run_move_group_node,
         rviz_node,
         joint_state_broadcaster_spawner,
@@ -251,5 +217,4 @@ def generate_launch_description():
         gz_launch_description_with_gui,
         gz_sim_bridge,
         depth_image_converter,
-        pcl_filter_node,
     ])
