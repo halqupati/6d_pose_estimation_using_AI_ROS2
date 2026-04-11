@@ -19,14 +19,15 @@ find_package(shape_msgs REQUIRED)
 find_package(geometric_shapes REQUIRED)
 
 set(executable_list
+  bin_picking_node_v7_to_control_jaka_s12
   bin_picking_node_v6
+  bin_picking_node_v5_to_control_jaka_s12
   bin_picking_node_v5
   bin_picking_node_v4
   bin_picking_node_v3
   bin_picking_node_v2
   bin_picking_node_v1
   bin_picking_node_copy
-  joint_states_filter_node
 
 )
 
