@@ -1,0 +1,64 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <model name="hex_nut">
+    <static>false</static>
+    <pose>0 0 0.01 0 0 0</pose>
+    
+    <link name="nut_body">
+      <pose>0 0 0 0 0 0</pose>
+      
+      <inertial>
+        <mass>0.08</mass>
+        <inertia>
+          <ixx>0.00001</ixx>
+          <iyy>0.00001</iyy>
+          <izz>0.00001</izz>
+        </inertia>
+      </inertial>
+      
+      <!-- Collision (simplified cylinder for performance) -->
+      <collision name="collision">
+        <geometry>
+          <cylinder>
+            <radius>0.012</radius>
+            <length>0.008</length>
+          </cylinder>
+        </geometry>
+        <surface>
+          <contact>
+            <ode>
+              <kp>20000000</kp>
+              <kd>100</kd>
+              <max_vel>0.001</max_vel>
+              <min_depth>0.002</min_depth>
+            </ode>
+          </contact>
+          <friction>
+            <ode>
+              <mu>2.0</mu>
+              <mu2>2.0</mu2>
+              <fdir1>0 0 0</fdir1>
+              <slip1>0</slip1>
+              <slip2>0</slip2>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+      
+      <!-- Visual with mesh -->
+      <visual name="visual">
+        <geometry>
+          <mesh>
+            <uri>model://nut/meshes/nut.dae</uri>
+            <scale>1 1 1</scale> <!-- Convert mm to m -->
+          </mesh>
+        </geometry>
+        <material name="galvanized">
+                <ambient>0.9 0.9 0.85 1</ambient>
+                <diffuse>0.95 0.95 0.9 1</diffuse>
+                <specular>0.5 0.5 0.5 1</specular>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>
