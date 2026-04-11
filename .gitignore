@@ -6,8 +6,15 @@ jaka_ros_ws/src/jaka_description/launch/__pycache__/
 jaka_ros_ws/.catkin_workspace
 jaka_ros_ws/.vscode
 jaka_ros_ws/new file
+jaka_ros_ws/src/bin_packing_pkg/launch/__pycache__
+jaka_ros_ws/src/jaka_s12_moveit_config/launch/__pycache__/jaka_s12_moveit_gazebo_camera.launch.cpython-310.pyc
+
+/aae_infer/autoencoder_ws/__pycache__/aae_ros_infer_sim_v4.cpython-310.pyc
 aae_infer/autoencoder_ws/experiments/exp_group/my_autoencoder/checkpoints
 /aae_infer/autoencoder_ws/tmp_datasets
-jaka_ros_ws/src/bin_packing_pkg/launch/__pycache__
-yolov12_seg_infer/__pycache__/yolo_ros_infer_sim_v11.cpython-310.pyc
-jaka_ros_ws/src/jaka_s12_moveit_config/launch/__pycache__/jaka_s12_moveit_gazebo_camera.launch.cpython-310.pyc
+
+
+
+yolov12_seg_infer/__pycache__
+
+tools/__pycache__
