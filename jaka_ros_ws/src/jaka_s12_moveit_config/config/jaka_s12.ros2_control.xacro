@@ -5,7 +5,7 @@
   Declares:
     - 6 arm joints (joint_1 … joint_6) with position command + state
     - jaw_left_joint  : master prismatic joint (position command + state)
-    - jaw_right_joint : slave mimic joint (state only, follows jaw_left × -1)
+    - jaw_right_joint : mimic state joint; follows jaw_left in Gazebo
 
   Hardware plugin selection (set via launch args):
     use_gazebo=true   → gz_ros2_control/GazeboSimSystem  (Ignition Gazebo)
@@ -99,16 +99,15 @@
                 <state_interface name="velocity"/>
             </joint>
 
-            <!-- jaw_right is the SLAVE mimic joint: state only, no command needed -->
+            <!-- jaw_right is exported as a mimic state joint so Gazebo moves it physically -->
             <joint name="${prefix}gripper_jaw_right_joint">
-                <param name="mimic">${prefix}gripper_jaw_left_joint</param>
-                <param name="multiplier">-1</param>
+                    <param name="mimic">${prefix}gripper_jaw_left_joint</param>
+                    <param name="multiplier">-1</param>
                     <state_interface name="position">
                      <param name="initial_value">0.0</param>
                     </state_interface>
                     <state_interface name="velocity"/>
             </joint>
-
         </ros2_control>
     </xacro:macro>
 </robot>

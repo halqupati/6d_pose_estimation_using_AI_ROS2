@@ -4,6 +4,7 @@
 #   jaka_s12_controller      : arm (joint_1 … joint_6)
 #   custom_gripper_controller: gripper (jaw_left_joint)
 #   joint_state_broadcaster  : publishes /joint_states
+#   [Solved]Adding    interfaces: - position - velocity in joint_state_broadcaster solve [move_group-2] [ERROR] [1775680549.120382542] [moveit_robot_model.robot_model]: Joint 'gripper_jaw_right_joint_mimic' not found in model 'jaka_s12' 
 
 controller_manager:
   ros__parameters:
@@ -25,6 +26,9 @@ controller_manager:
         - joint_5
         - joint_6
         - gripper_jaw_left_joint
+      interfaces:
+        - position
+        - velocity
 
 
 jaka_s12_controller:
@@ -63,4 +67,6 @@ joint_state_broadcaster:
       - joint_5
       - joint_6
       - gripper_jaw_left_joint
-      - gripper_jaw_right_joint
+    interfaces:
+      - position
+      - velocity
