@@ -3,6 +3,7 @@ from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
@@ -20,6 +21,11 @@ def generate_launch_description():
 
     arm_velocity_scaling = LaunchConfiguration("arm_velocity_scaling")
     arm_acceleration_scaling = LaunchConfiguration("arm_acceleration_scaling")
+    pick_safe_gap_z = LaunchConfiguration("pick_safe_gap_z")
+    detected_nut_height = LaunchConfiguration("detected_nut_height")
+    min_grasp_tcp_above_table = LaunchConfiguration("min_grasp_tcp_above_table")
+    enable_collision_monitor = LaunchConfiguration("enable_collision_monitor")
+    collision_check_period = LaunchConfiguration("collision_check_period")
 
     # -------------------------
     # MoveIt configuration
@@ -53,7 +59,9 @@ def generate_launch_description():
                 "grasp_final_offset": 0.0,
                 "grasp_descent_step": 0.002,
                 "pick_approach_offset": 0.020,
-                "pick_safe_gap_z": 0.003,
+                "pick_safe_gap_z": pick_safe_gap_z,
+                "detected_nut_height": detected_nut_height,
+                "min_grasp_tcp_above_table": min_grasp_tcp_above_table,
                 "max_pick_descent": 0.25,
                 "pick_xy_tolerance": 0.008,
                 "pick_z_tolerance": 0.010,
@@ -73,14 +81,34 @@ def generate_launch_description():
             },
         ],
     )
-    
+
+    collision_monitor_node = Node(
+        name="collision_monitor_node",
+        package="bin_packing_pkg",
+        executable="collision_monitor_node",
+        output="screen",
+        condition=IfCondition(enable_collision_monitor),
+        parameters=[
+            moveit_config.robot_description,
+            {
+                "use_sim_time": True,
+                "planning_scene_topic": "/monitored_planning_scene",
+                "check_period_sec": collision_check_period,
+            },
+        ],
+    )
 
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("arm_velocity_scaling", default_value="0.30"),
             DeclareLaunchArgument("arm_acceleration_scaling", default_value="0.30"),
+            DeclareLaunchArgument("pick_safe_gap_z", default_value="0.003"),
+            DeclareLaunchArgument("detected_nut_height", default_value="0.008"),
+            DeclareLaunchArgument("min_grasp_tcp_above_table", default_value="0.020"),
+            DeclareLaunchArgument("enable_collision_monitor", default_value="true"),
+            DeclareLaunchArgument("collision_check_period", default_value="0.20"),
             move_group_node,
-            
+            collision_monitor_node,
         ]
     )

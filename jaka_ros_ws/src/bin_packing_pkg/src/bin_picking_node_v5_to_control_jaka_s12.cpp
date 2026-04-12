@@ -52,13 +52,15 @@ public:
         grasp_descent_step_ = this->declare_parameter<double>("grasp_descent_step", 0.002);
         pick_approach_offset_ = this->declare_parameter<double>("pick_approach_offset", 0.020);
         pick_safe_gap_z_ = this->declare_parameter<double>("pick_safe_gap_z", 0.003);
+        detected_nut_height_ = this->declare_parameter<double>("detected_nut_height", 0.008);
+        min_grasp_tcp_above_table_ = this->declare_parameter<double>("min_grasp_tcp_above_table", 0.020);
         max_pick_descent_ = this->declare_parameter<double>("max_pick_descent", 0.25);
         pick_xy_tolerance_ = this->declare_parameter<double>("pick_xy_tolerance", 0.008);
         pick_z_tolerance_ = this->declare_parameter<double>("pick_z_tolerance", 0.010);
         pick_clearance_z_ = this->declare_parameter<double>("pick_clearance_z", 0.01);
         table_top_z_ = this->declare_parameter<double>("table_top_z", -0.06);
 
-        arm_velocity_scaling_ = this->declare_parameter<double>("arm_velocity_scaling", 0.30);
+        arm_velocity_scaling_ = this->declare_parameter<double>("arm_velocity_scaling", 0.70);
         arm_acceleration_scaling_ = this->declare_parameter<double>("arm_acceleration_scaling", 0.30);
         arm_planning_time_ = this->declare_parameter<double>("arm_planning_time", 5.0);
 
@@ -157,6 +159,8 @@ private:
     double grasp_descent_step_ = 0.002;  // Step size for final vertical descent
     double pick_approach_offset_ = 0.020;
     double pick_safe_gap_z_ = 0.003;     // Keep a small margin above the final grasp plane in seq 2
+    double detected_nut_height_ = 0.008; // Approximate nut thickness; detection z is the visible top surface
+    double min_grasp_tcp_above_table_ = 0.020;
     double max_pick_descent_ = 0.25;
     double pick_xy_tolerance_ = 0.008;
     double pick_z_tolerance_ = 0.010;
@@ -200,6 +204,11 @@ private:
 
         double new_arm_velocity_scaling = arm_velocity_scaling_;
         double new_arm_acceleration_scaling = arm_acceleration_scaling_;
+        double new_pick_safe_gap_z = pick_safe_gap_z_;
+        double new_detected_nut_height = detected_nut_height_;
+        double new_min_grasp_tcp_above_table = min_grasp_tcp_above_table_;
+        bool motion_profile_requested = false;
+        bool pick_safety_requested = false;
 
         for (const auto &parameter : parameters) {
             if (parameter.get_name() == "arm_velocity_scaling") {
@@ -210,6 +219,7 @@ private:
                     return result;
                 }
                 new_arm_velocity_scaling = value;
+                motion_profile_requested = true;
             } else if (parameter.get_name() == "arm_acceleration_scaling") {
                 const double value = parameter.as_double();
                 if (value <= 0.0 || value > 1.0) {
@@ -218,22 +228,64 @@ private:
                     return result;
                 }
                 new_arm_acceleration_scaling = value;
+                motion_profile_requested = true;
+            } else if (parameter.get_name() == "pick_safe_gap_z") {
+                const double value = parameter.as_double();
+                if (value < 0.0) {
+                    result.successful = false;
+                    result.reason = "pick_safe_gap_z must be >= 0.0.";
+                    return result;
+                }
+                new_pick_safe_gap_z = value;
+                pick_safety_requested = true;
+            } else if (parameter.get_name() == "detected_nut_height") {
+                const double value = parameter.as_double();
+                if (value <= 0.0) {
+                    result.successful = false;
+                    result.reason = "detected_nut_height must be > 0.0.";
+                    return result;
+                }
+                new_detected_nut_height = value;
+                pick_safety_requested = true;
+            } else if (parameter.get_name() == "min_grasp_tcp_above_table") {
+                const double value = parameter.as_double();
+                if (value <= 0.0) {
+                    result.successful = false;
+                    result.reason = "min_grasp_tcp_above_table must be > 0.0.";
+                    return result;
+                }
+                new_min_grasp_tcp_above_table = value;
+                pick_safety_requested = true;
             }
         }
 
         arm_velocity_scaling_ = new_arm_velocity_scaling;
         arm_acceleration_scaling_ = new_arm_acceleration_scaling;
+        pick_safe_gap_z_ = new_pick_safe_gap_z;
+        detected_nut_height_ = new_detected_nut_height;
+        min_grasp_tcp_above_table_ = new_min_grasp_tcp_above_table;
 
-        if (arm_group_) {
+        if (arm_group_ && motion_profile_requested) {
             arm_group_->setMaxVelocityScalingFactor(arm_velocity_scaling_);
             arm_group_->setMaxAccelerationScalingFactor(arm_acceleration_scaling_);
         }
 
-        RCLCPP_INFO(
-            this->get_logger(),
-            "Updated motion profile: velocity_scaling=%.2f acceleration_scaling=%.2f",
-            arm_velocity_scaling_,
-            arm_acceleration_scaling_);
+        if (motion_profile_requested) {
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Updated motion profile: velocity_scaling=%.2f acceleration_scaling=%.2f",
+                arm_velocity_scaling_,
+                arm_acceleration_scaling_);
+        }
+
+        if (pick_safety_requested) {
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Updated pick safety: pick_safe_gap_z=%.4f detected_nut_height=%.4f min_grasp_tcp_above_table=%.4f",
+                pick_safe_gap_z_,
+                detected_nut_height_,
+                min_grasp_tcp_above_table_);
+        }
         return result;
     }
 
@@ -334,11 +386,21 @@ private:
         return q_cur.angleShortestPath(q_tgt) <= ang_tol;
     }
 
+    double estimateTableSurfaceZ(double nut_top_z) const
+    {
+        return std::max(table_top_z_, nut_top_z - detected_nut_height_);
+    }
+
+    double computeMinimumSafeTcpZ(double nut_z) const
+    {
+        return estimateTableSurfaceZ(nut_z) + min_grasp_tcp_above_table_;
+    }
+
     double computePickTcpZ(double nut_z) const
     {
         return std::max(
             nut_z + grasp_final_offset_ + pick_safe_gap_z_,
-            table_top_z_ + pick_clearance_z_ + pick_safe_gap_z_);
+            computeMinimumSafeTcpZ(nut_z));
     }
 
     bool getCurrentArmPose(geometry_msgs::msg::Pose &pose_out)
@@ -990,10 +1052,13 @@ private:
                     arm_group_->getCurrentPose(flange_link_name_).pose.position.z);
                 RCLCPP_INFO(
                     this->get_logger(),
-                    "Seq 2 Z safety settings: pick_safe_gap_z=%.4f table_top_z=%.4f pick_clearance_z=%.4f",
+                    "Seq 2 Z safety settings: estimated_table_z=%.4f pick_safe_gap_z=%.4f "
+                    "detected_nut_height=%.4f min_grasp_tcp_above_table=%.4f table_top_z=%.4f",
+                    estimateTableSurfaceZ(static_cast<double>(local_nut[2])),
                     pick_safe_gap_z_,
-                    table_top_z_,
-                    pick_clearance_z_);
+                    detected_nut_height_,
+                    min_grasp_tcp_above_table_,
+                    table_top_z_);
 
                 auto pick_pose = buildTopDownPose(local_nut[0], local_nut[1], pick_tcp_z, local_nut[3]);
                 if (!moveVerticalToPoseInSteps(pick_pose, grasp_descent_step_, 0.80, false, false)) {
@@ -1021,6 +1086,10 @@ private:
                 }
                 if (!isCurrentPoseNearTarget(validated_pick_pose_, pick_xy_tolerance_, pick_z_tolerance_)) {
                     requestNewDetection("Robot drifted away from validated pick pose before close");
+                    break;
+                }
+                if (current_pose.position.z < computeMinimumSafeTcpZ(static_cast<double>(local_nut[2])) - 0.002) {
+                    requestNewDetection("Refusing to close gripper because TCP dropped below safe table clearance");
                     break;
                 }
 
