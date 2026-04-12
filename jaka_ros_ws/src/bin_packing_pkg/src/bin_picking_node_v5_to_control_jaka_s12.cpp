@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cmath>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -145,6 +146,9 @@ private:
     std::array<float, 4> nut_pose_angle_{};
     std::mutex pose_mutex_;
     size_t bin_index_ = 0;
+    std::string last_launcher_case_;
+    std::string last_launcher_detail_;
+    size_t last_launcher_picked_count_ = static_cast<size_t>(-1);
 
     std::string arm_group_name_;
     std::string gripper_group_name_;
@@ -289,6 +293,28 @@ private:
         return result;
     }
 
+    void publishLauncherStatus(const std::string &robot_case, const std::string &detail = "")
+    {
+        const size_t picked_count = bin_index_;
+        if (robot_case == last_launcher_case_ &&
+            detail == last_launcher_detail_ &&
+            picked_count == last_launcher_picked_count_) {
+            return;
+        }
+
+        last_launcher_case_ = robot_case;
+        last_launcher_detail_ = detail;
+        last_launcher_picked_count_ = picked_count;
+
+        RCLCPP_INFO(
+            this->get_logger(),
+            "[LAUNCHER_STATUS] robot_case=%s; sequence=%d; picked_count=%zu; detail=%s",
+            robot_case.c_str(),
+            sequence_,
+            picked_count,
+            detail.empty() ? "-" : detail.c_str());
+    }
+
     bool waitForRobotState(double timeout_sec)
     {
         const auto start = this->now();
@@ -348,6 +374,7 @@ private:
         is_busy_ = false;
         nut_pose_received_ = false;
         validated_pick_pose_valid_ = false;
+        publishLauncherStatus("Request new detection", reason);
         std_msgs::msg::Bool trigger;
         trigger.data = true;
         trigger_pub_->publish(trigger);
@@ -917,8 +944,10 @@ private:
         trigger_pub_->publish(trigger);
 
         if (bin_index_ >= bin_locations_.size()) {
+            publishLauncherStatus("Completed", "All configured place slots finished");
             RCLCPP_INFO(this->get_logger(), COLOR_CYAN "The simulation is completed!" COLOR_RESET);
         } else {
+            publishLauncherStatus("Waiting for next nut pose", "Previous nut placed successfully");
             RCLCPP_INFO(this->get_logger(), COLOR_CYAN "Cycle complete. Requesting next nut pose." COLOR_RESET);
         }
     }
@@ -928,6 +957,7 @@ private:
         if (!arm_group_ || !gripper_group_ || is_busy_) {
             if (!arm_group_ || !gripper_group_) {
                 if (!move_group_wait_logged_) {
+                    publishLauncherStatus("Waiting for MoveGroup", "MoveGroup initialization pending");
                     RCLCPP_INFO(this->get_logger(), "Waiting for MoveGroupInterface initialization...");
                     move_group_wait_logged_ = true;
                 }
@@ -938,10 +968,12 @@ private:
         move_group_wait_logged_ = false;
 
         if (bin_index_ >= bin_locations_.size()) {
+            publishLauncherStatus("Completed", "All configured place slots finished");
             return;
         }
 
         if (!nut_pose_received_) {
+            publishLauncherStatus("Waiting for nut pose", "Perception has not delivered a pick pose yet");
             std_msgs::msg::Bool trigger;
             trigger.data = true;
             trigger_pub_->publish(trigger);
@@ -961,6 +993,7 @@ private:
 
         switch (sequence_) {
             case 0: {
+                publishLauncherStatus("Sequence 0: Hover and align");
                 RCLCPP_INFO(this->get_logger(), COLOR_GREEN "Sequence 0: Hover and align" COLOR_RESET);
                 if (!moveArmToJointTarget(ready_joints_)) {
                     requestNewDetection("Failed to move to ready seed");
@@ -982,6 +1015,7 @@ private:
             }
 
             case 1: {
+                publishLauncherStatus("Sequence 1: Open gripper");
                 RCLCPP_INFO(this->get_logger(), COLOR_GREEN "Sequence 1: Open gripper" COLOR_RESET);
                 if (moveGripper(gripper_open_cmd_)) {
                     sequence_ = 2;
@@ -992,6 +1026,7 @@ private:
             }
 
             case 2: {
+                publishLauncherStatus("Sequence 2: Descend to pick pose");
                 RCLCPP_INFO(this->get_logger(), COLOR_GREEN "Sequence 2: Descend to pick pose" COLOR_RESET);
                 if (!ensureGripperOpenForPick()) {
                     requestNewDetection("Gripper failed to reach open state before pick descent");
@@ -1078,6 +1113,7 @@ private:
             }
 
             case 3: {
+                publishLauncherStatus("Sequence 3: Close gripper");
                 RCLCPP_INFO(this->get_logger(), COLOR_GREEN "Sequence 3: Close gripper" COLOR_RESET);
                 const auto current_pose = arm_group_->getCurrentPose(flange_link_name_).pose;
                 if (!validated_pick_pose_valid_) {
@@ -1111,6 +1147,7 @@ private:
             }
 
             case 4: {
+                publishLauncherStatus("Sequence 4: Lift");
                 RCLCPP_INFO(this->get_logger(), COLOR_GREEN "Sequence 4: Lift" COLOR_RESET);
                 const auto current_pose = arm_group_->getCurrentPose(flange_link_name_).pose;
                 if (isGripperNearCommand(gripper_open_cmd_)) {
@@ -1144,6 +1181,7 @@ private:
             }
 
             case 5: {
+                publishLauncherStatus("Sequence 5: Move to place hover");
                 RCLCPP_INFO(this->get_logger(), COLOR_GREEN "Sequence 5: Move to place hover" COLOR_RESET);
                 const auto place_hover_pose = buildTopDownPose(
                     bin_locations_[bin_index_][0],
@@ -1159,6 +1197,7 @@ private:
             }
 
             case 6: {
+                publishLauncherStatus("Sequence 6: Descend to place");
                 RCLCPP_INFO(this->get_logger(), COLOR_GREEN "Sequence 6: Descend to place" COLOR_RESET);
                 const double place_tcp_z = std::max(
                     bin_locations_[bin_index_][2] + tool_center_offset_,
@@ -1177,6 +1216,7 @@ private:
             }
 
             case 7: {
+                publishLauncherStatus("Sequence 7: Release");
                 RCLCPP_INFO(this->get_logger(), COLOR_GREEN "Sequence 7: Release" COLOR_RESET);
                 if (!moveGripper(gripper_open_cmd_)) {
                     requestNewDetection("Release gripper failed");
@@ -1187,6 +1227,7 @@ private:
             }
 
             case 8: {
+                publishLauncherStatus("Sequence 8: Retreat and reset");
                 RCLCPP_INFO(this->get_logger(), COLOR_GREEN "Sequence 8: Retreat and reset" COLOR_RESET);
                 const auto current_pose = arm_group_->getCurrentPose(flange_link_name_).pose;
                 const bool retreat_ok = moveCartesian(

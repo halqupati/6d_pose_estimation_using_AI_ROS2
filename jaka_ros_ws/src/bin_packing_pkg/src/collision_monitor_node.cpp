@@ -52,6 +52,15 @@ public:
   }
 
 private:
+  void logLauncherCollisionStatus(bool colliding, const std::string& detail)
+  {
+    RCLCPP_INFO(
+        this->get_logger(),
+        "[LAUNCHER_STATUS] collision=%d; detail=%s",
+        colliding ? 1 : 0,
+        detail.empty() ? "-" : detail.c_str());
+  }
+
   void publishCollisionState(bool colliding)
   {
     std_msgs::msg::Bool msg;
@@ -104,22 +113,26 @@ private:
 
     publishCollisionState(result.collision);
 
-    if (result.collision != last_collision_state_) {
+    if (!collision_state_known_ || result.collision != last_collision_state_) {
       if (result.collision) {
+        logLauncherCollisionStatus(true, "Collision detected in current robot state");
         RCLCPP_WARN(
             this->get_logger(),
             "COLLISION ALERT: current robot state is colliding. %s",
             formatContacts(result.contacts).c_str());
       } else {
+        logLauncherCollisionStatus(false, "Collision monitor reports clear");
         RCLCPP_INFO(this->get_logger(), "Collision monitor: current robot state is clear.");
       }
       last_collision_state_ = result.collision;
+      collision_state_known_ = true;
     }
   }
 
   std::string planning_scene_topic_;
   double check_period_sec_ = 0.20;
   bool last_collision_state_ = false;
+  bool collision_state_known_ = false;
 
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr collision_pub_;
   rclcpp::TimerBase::SharedPtr timer_;

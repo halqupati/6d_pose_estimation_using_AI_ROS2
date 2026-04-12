@@ -54,6 +54,7 @@ STOP_ACTIVE = "#B45309"
 START = "#16A34A"
 START_ACTIVE = "#166534"
 WARNING_WINDOW_SEC = 8.0
+LAUNCHER_STATUS_PREFIX = "[LAUNCHER_STATUS]"
 
 
 def shell_quote(path: Path | str) -> str:
@@ -363,6 +364,18 @@ class ProjectLauncherApp:
         self.robot_status_text = tk.StringVar(value="Stopped")
         self.robot_detail_text = tk.StringVar(value="Launcher idle")
         self.robot_status_label: tk.Label | None = None
+        self.collision_seen = False
+        self.collision_active = False
+        self.collision_status_text = tk.StringVar(value="Unknown")
+        self.collision_detail_text = tk.StringVar(value="Waiting for collision monitor data.")
+        self.collision_indicator_canvas: tk.Canvas | None = None
+        self.collision_indicator_oval: int | None = None
+        self.picked_count_text = tk.StringVar(value="0")
+        self.robot_case_text = tk.StringVar(value="Idle")
+        self.robot_case_detail_text = tk.StringVar(value="Bin-picking process not running.")
+        self.error_count = 0
+        self.error_count_text = tk.StringVar(value="0")
+        self.error_log_widget: ScrolledText | None = None
         self.warning_until = 0.0
         self.warning_message = ""
         self.emergency_latched = False
@@ -441,10 +454,45 @@ class ProjectLauncherApp:
             font=("TkDefaultFont", 9),
         ).pack(anchor="w")
 
-        dashboard = tk.Frame(root_frame, bg=BG)
+        main_pane = ttk.Panedwindow(root_frame, orient=tk.VERTICAL)
+        main_pane.pack(fill=tk.BOTH, expand=True)
+
+        top_pane = tk.Frame(main_pane, bg=BG)
+        bottom_pane = tk.Frame(main_pane, bg=BG)
+        main_pane.add(top_pane, weight=3)
+        main_pane.add(bottom_pane, weight=2)
+
+        top_scroll_frame = tk.Frame(top_pane, bg=BG)
+        top_scroll_frame.pack(fill=tk.BOTH, expand=True)
+
+        top_canvas = tk.Canvas(
+            top_scroll_frame,
+            bg=BG,
+            highlightthickness=0,
+            bd=0,
+        )
+        top_scrollbar = tk.Scrollbar(top_scroll_frame, orient=tk.VERTICAL, command=top_canvas.yview)
+        top_canvas.configure(yscrollcommand=top_scrollbar.set)
+        top_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        top_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        controls_content = tk.Frame(top_canvas, bg=BG)
+        controls_window = top_canvas.create_window((0, 0), window=controls_content, anchor="nw")
+
+        def _update_controls_scrollregion(_event) -> None:
+            top_canvas.configure(scrollregion=top_canvas.bbox("all"))
+
+        def _resize_controls_width(event) -> None:
+            top_canvas.itemconfigure(controls_window, width=event.width)
+
+        controls_content.bind("<Configure>", _update_controls_scrollregion)
+        top_canvas.bind("<Configure>", _resize_controls_width)
+
+        dashboard = tk.Frame(controls_content, bg=BG)
         dashboard.pack(fill=tk.X, pady=(0, 14))
         dashboard.grid_columnconfigure(0, weight=1)
         dashboard.grid_columnconfigure(1, weight=1)
+        dashboard.grid_rowconfigure(1, weight=1)
 
         status_card = tk.Frame(dashboard, bg=PANEL_BG, padx=18, pady=16, highlightthickness=1, highlightbackground="#1F2937")
         status_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
@@ -492,7 +540,116 @@ class ProjectLauncherApp:
         self._make_button(preset_row, "Fast", "#7C3AED", "#5B21B6", lambda: self.set_motion_profile(0.80, 0.60), width=10).pack(side=tk.LEFT, padx=(8, 0))
         self._make_button(preset_row, "Apply Live", START, START_ACTIVE, self.apply_motion_profile, width=12).pack(side=tk.RIGHT)
 
-        process_card = tk.Frame(root_frame, bg=PANEL_BG, padx=18, pady=16, highlightthickness=1, highlightbackground="#1F2937")
+        telemetry_card = tk.Frame(dashboard, bg=PANEL_BG, padx=18, pady=16, highlightthickness=1, highlightbackground="#1F2937")
+        telemetry_card.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
+        telemetry_card.grid_columnconfigure(0, weight=1)
+        telemetry_card.grid_columnconfigure(1, weight=1)
+        telemetry_card.grid_columnconfigure(2, weight=2)
+        telemetry_card.grid_columnconfigure(3, weight=1)
+
+        tk.Label(
+            telemetry_card,
+            text="Live Telemetry",
+            bg=PANEL_BG,
+            fg=MUTED,
+            font=("TkDefaultFont", 10, "bold"),
+        ).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 12))
+
+        collision_box = tk.Frame(telemetry_card, bg=PANEL_ALT, padx=14, pady=12, highlightthickness=1, highlightbackground="#1F2937")
+        collision_box.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
+        tk.Label(collision_box, text="Collision", bg=PANEL_ALT, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        collision_row = tk.Frame(collision_box, bg=PANEL_ALT)
+        collision_row.pack(anchor="w", pady=(8, 4))
+        self.collision_indicator_canvas = tk.Canvas(
+            collision_row,
+            width=18,
+            height=18,
+            bg=PANEL_ALT,
+            highlightthickness=0,
+            bd=0,
+        )
+        self.collision_indicator_canvas.pack(side=tk.LEFT, padx=(0, 8))
+        self.collision_indicator_oval = self.collision_indicator_canvas.create_oval(2, 2, 16, 16, fill="#64748B", outline="")
+        tk.Label(
+            collision_row,
+            textvariable=self.collision_status_text,
+            bg=PANEL_ALT,
+            fg=TEXT,
+            font=("TkDefaultFont", 14, "bold"),
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            collision_box,
+            textvariable=self.collision_detail_text,
+            bg=PANEL_ALT,
+            fg=TEXT,
+            wraplength=250,
+            justify=tk.LEFT,
+            font=("TkDefaultFont", 9),
+        ).pack(anchor="w")
+
+        picked_box = tk.Frame(telemetry_card, bg=PANEL_ALT, padx=14, pady=12, highlightthickness=1, highlightbackground="#1F2937")
+        picked_box.grid(row=1, column=1, sticky="nsew", padx=8)
+        tk.Label(picked_box, text="Picked Nuts", bg=PANEL_ALT, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        tk.Label(
+            picked_box,
+            textvariable=self.picked_count_text,
+            bg=PANEL_ALT,
+            fg="#F8FAFC",
+            font=("TkDefaultFont", 26, "bold"),
+        ).pack(anchor="w", pady=(10, 4))
+        tk.Label(
+            picked_box,
+            text="Completed pick-and-place cycles in this launcher run.",
+            bg=PANEL_ALT,
+            fg=TEXT,
+            wraplength=220,
+            justify=tk.LEFT,
+            font=("TkDefaultFont", 9),
+        ).pack(anchor="w")
+
+        case_box = tk.Frame(telemetry_card, bg=PANEL_ALT, padx=14, pady=12, highlightthickness=1, highlightbackground="#1F2937")
+        case_box.grid(row=1, column=2, sticky="nsew", padx=8)
+        tk.Label(case_box, text="Current Case", bg=PANEL_ALT, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        tk.Label(
+            case_box,
+            textvariable=self.robot_case_text,
+            bg=PANEL_ALT,
+            fg="#F8FAFC",
+            wraplength=360,
+            justify=tk.LEFT,
+            font=("TkDefaultFont", 15, "bold"),
+        ).pack(anchor="w", pady=(10, 4))
+        tk.Label(
+            case_box,
+            textvariable=self.robot_case_detail_text,
+            bg=PANEL_ALT,
+            fg=TEXT,
+            wraplength=360,
+            justify=tk.LEFT,
+            font=("TkDefaultFont", 9),
+        ).pack(anchor="w")
+
+        errors_box = tk.Frame(telemetry_card, bg=PANEL_ALT, padx=14, pady=12, highlightthickness=1, highlightbackground="#1F2937")
+        errors_box.grid(row=1, column=3, sticky="nsew", padx=(8, 0))
+        tk.Label(errors_box, text="Errors", bg=PANEL_ALT, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        tk.Label(
+            errors_box,
+            textvariable=self.error_count_text,
+            bg=PANEL_ALT,
+            fg="#FCA5A5",
+            font=("TkDefaultFont", 26, "bold"),
+        ).pack(anchor="w", pady=(10, 4))
+        tk.Label(
+            errors_box,
+            text="Warnings, failures, collision alerts, and tracebacks.",
+            bg=PANEL_ALT,
+            fg=TEXT,
+            wraplength=220,
+            justify=tk.LEFT,
+            font=("TkDefaultFont", 9),
+        ).pack(anchor="w")
+
+        process_card = tk.Frame(controls_content, bg=PANEL_BG, padx=18, pady=16, highlightthickness=1, highlightbackground="#1F2937")
         process_card.pack(fill=tk.X, pady=(0, 14))
         tk.Label(process_card, text="Processes", bg=PANEL_BG, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w", pady=(0, 10))
 
@@ -546,8 +703,36 @@ class ProjectLauncherApp:
             self._make_button(controls, "Start", START, START_ACTIVE, lambda key=config.key: self.start_process(key), width=9).pack(side=tk.LEFT)
             self._make_button(controls, "Stop", STOP, STOP_ACTIVE, lambda key=config.key: self.stop_process(key), width=9).pack(side=tk.LEFT, padx=(8, 0))
 
-        log_notebook = ttk.Notebook(root_frame)
+        log_notebook = ttk.Notebook(bottom_pane)
         log_notebook.pack(fill=tk.BOTH, expand=True)
+
+        error_tab = tk.Frame(log_notebook, bg=PANEL_ALT)
+        log_notebook.add(error_tab, text="Errors")
+        error_toolbar = tk.Frame(error_tab, bg=PANEL_ALT, padx=10, pady=8)
+        error_toolbar.pack(fill=tk.X)
+        tk.Label(
+            error_toolbar,
+            text="Aggregated warnings, errors, failed exits, and collision alerts from all launcher-managed processes.",
+            bg=PANEL_ALT,
+            fg=MUTED,
+            font=("TkDefaultFont", 9),
+        ).pack(side=tk.LEFT)
+        self._make_button(error_toolbar, "Clear Errors", "#334155", "#1E293B", self.clear_errors, width=12).pack(side=tk.RIGHT)
+
+        self.error_log_widget = ScrolledText(
+            error_tab,
+            wrap=tk.WORD,
+            font=("TkFixedFont", 10),
+            bg="#020617",
+            fg="#FECACA",
+            insertbackground="#FECACA",
+            selectbackground="#991B1B",
+            relief=tk.FLAT,
+            padx=10,
+            pady=10,
+        )
+        self.error_log_widget.pack(fill=tk.BOTH, expand=True)
+        self.error_log_widget.configure(state=tk.DISABLED)
 
         for config in self.process_configs:
             tab = tk.Frame(log_notebook, bg=PANEL_ALT)
@@ -567,6 +752,9 @@ class ProjectLauncherApp:
             log_widget.pack(fill=tk.BOTH, expand=True)
             log_widget.configure(state=tk.DISABLED)
             self.log_widgets[config.key] = log_widget
+
+        self._update_collision_indicator()
+        self.root.after(0, lambda: main_pane.sashpos(0, max(420, int(self.root.winfo_height() * 0.64))))
 
     def _build_slider_row(self, parent: tk.Widget, label: str, variable: tk.DoubleVar, text_var: tk.StringVar) -> None:
         row = tk.Frame(parent, bg=PANEL_BG)
@@ -608,6 +796,114 @@ class ProjectLauncherApp:
             cursor="hand2",
             font=("TkDefaultFont", 10, "bold"),
         )
+
+    def _update_collision_indicator(self) -> None:
+        if self.collision_indicator_canvas is None or self.collision_indicator_oval is None:
+            return
+
+        if not self.collision_seen:
+            color = "#64748B"
+        elif self.collision_active:
+            color = "#EF4444"
+        else:
+            color = "#22C55E"
+
+        self.collision_indicator_canvas.itemconfigure(self.collision_indicator_oval, fill=color)
+
+    def _reset_bin_picking_telemetry(self) -> None:
+        self.collision_seen = False
+        self.collision_active = False
+        self.collision_status_text.set("Unknown")
+        self.collision_detail_text.set("Waiting for collision monitor data.")
+        self.picked_count_text.set("0")
+        self.robot_case_text.set("Starting")
+        self.robot_case_detail_text.set("Bin-picking process launch requested.")
+        self._update_collision_indicator()
+
+    def _set_bin_picking_offline(self) -> None:
+        self.collision_seen = False
+        self.collision_active = False
+        self.collision_status_text.set("Offline")
+        self.collision_detail_text.set("Bin-picking stack is not running.")
+        self.robot_case_text.set("Stopped")
+        self.robot_case_detail_text.set("Bin-picking process not running.")
+        self._update_collision_indicator()
+
+    def clear_errors(self) -> None:
+        self.error_count = 0
+        self.error_count_text.set("0")
+        if self.error_log_widget is None:
+            return
+        self.error_log_widget.configure(state=tk.NORMAL)
+        self.error_log_widget.delete("1.0", tk.END)
+        self.error_log_widget.configure(state=tk.DISABLED)
+
+    def _append_error(self, line: str) -> None:
+        self.error_count += 1
+        self.error_count_text.set(str(self.error_count))
+        if self.error_log_widget is None:
+            return
+        self.error_log_widget.configure(state=tk.NORMAL)
+        self.error_log_widget.insert(tk.END, line)
+        self.error_log_widget.see(tk.END)
+        self.error_log_widget.configure(state=tk.DISABLED)
+
+    def _is_error_line(self, key: str, line: str) -> bool:
+        if LAUNCHER_STATUS_PREFIX in line:
+            return False
+
+        lowered = line.lower()
+        if "traceback" in lowered:
+            return True
+        if "[error]" in lowered or "[warn]" in lowered:
+            return True
+        if "collision alert" in lowered:
+            return True
+        if "[process exited with code " in lowered and "[process exited with code 0]" not in lowered:
+            return True
+        if "[launcher]" in lowered and ("failed" in lowered or "warning" in lowered or "emergency stop" in lowered):
+            return True
+        if key in CORE_PROCESS_KEYS and "failed" in lowered and "[launcher_status]" not in lowered:
+            return True
+        return False
+
+    def _handle_launcher_status_line(self, key: str, line: str) -> None:
+        marker_index = line.find(LAUNCHER_STATUS_PREFIX)
+        if marker_index < 0:
+            return
+
+        payload = line[marker_index + len(LAUNCHER_STATUS_PREFIX):].strip()
+        fields: dict[str, str] = {}
+        for part in payload.split(";"):
+            part = part.strip()
+            if not part or "=" not in part:
+                continue
+            name, value = part.split("=", 1)
+            fields[name.strip()] = value.strip()
+
+        if "robot_case" in fields:
+            self.robot_case_text.set(fields["robot_case"])
+            detail = fields.get("detail", "")
+            if detail and detail != "-":
+                self.robot_case_detail_text.set(detail)
+            elif key == "bin_picking":
+                self.robot_case_detail_text.set("Launcher status update received.")
+
+        if "picked_count" in fields:
+            self.picked_count_text.set(fields["picked_count"])
+
+        if "collision" in fields:
+            self.collision_seen = True
+            self.collision_active = fields["collision"] in {"1", "true", "True", "yes", "on"}
+            self.collision_status_text.set("Collision" if self.collision_active else "Clear")
+            detail = fields.get("detail", "")
+            if detail and detail != "-":
+                self.collision_detail_text.set(detail)
+            elif self.collision_active:
+                self.collision_detail_text.set("Collision detected in current robot state.")
+            else:
+                self.collision_detail_text.set("Collision monitor reports clear.")
+            self._update_collision_indicator()
 
     def _default_configs(self) -> list[ProcessConfig]:
         sim_launch = detect_sim_launch()
@@ -761,6 +1057,7 @@ class ProjectLauncherApp:
     def start_process(self, key: str) -> None:
         if key == "bin_picking":
             self._refresh_dynamic_commands()
+            self._reset_bin_picking_telemetry()
 
         command = self.command_vars[key].get().strip()
         if not command:
@@ -807,6 +1104,11 @@ class ProjectLauncherApp:
         widget.see(tk.END)
         widget.configure(state=tk.DISABLED)
 
+        self._handle_launcher_status_line(key, line)
+
+        if self._is_error_line(key, line):
+            self._append_error(f"[{key}] {line}")
+
         if key in CORE_PROCESS_KEYS and ("[WARN]" in line or "[ERROR]" in line or "Traceback" in line):
             self.warning_until = time.time() + WARNING_WINDOW_SEC
             self.warning_message = f"{self.processes[key].config.title} reported a warning or error."
@@ -821,23 +1123,38 @@ class ProjectLauncherApp:
         core_running = all(self.processes.get(key) and self.processes[key].is_running() for key in CORE_PROCESS_KEYS)
         any_running = any(process.is_running() for process in self.processes.values())
         any_warning_state = any(self.process_states.get(key) == "warning" for key in CORE_PROCESS_KEYS)
-        warning_active = self.emergency_latched or any_warning_state or (time.time() < self.warning_until)
+        warning_active = (
+            self.emergency_latched or
+            self.collision_active or
+            any_warning_state or
+            (time.time() < self.warning_until)
+        )
 
         if warning_active:
             state = "warning"
             text = "Warning"
-            detail = self.warning_message or "Operator attention required."
+            if self.collision_active:
+                detail = (
+                    f"Collision detected. Current case: {self.robot_case_text.get()}. "
+                    f"Picked nuts: {self.picked_count_text.get()}."
+                )
+            else:
+                detail = self.warning_message or "Operator attention required."
         elif core_running:
             state = "running"
             text = "Running"
             detail = (
-                f"Simulation and bin-picking are active. Motion profile: velocity={self.velocity_var.get():.2f}, "
+                f"Simulation and bin-picking are active. Case: {self.robot_case_text.get()}. "
+                f"Picked nuts: {self.picked_count_text.get()}. Motion profile: velocity={self.velocity_var.get():.2f}, "
                 f"acceleration={self.acceleration_var.get():.2f}. AAE port={self.aae_port}."
             )
         elif any_running:
             state = "warning"
             text = "Partial"
-            detail = "Only part of the stack is running. Start the remaining core processes or stop cleanly."
+            detail = (
+                "Only part of the stack is running. "
+                f"Last known case: {self.robot_case_text.get()}. Picked nuts: {self.picked_count_text.get()}."
+            )
         else:
             state = "stopped"
             text = "Stopped"
@@ -876,6 +1193,9 @@ class ProjectLauncherApp:
                     self._set_process_status(key, "Running", "running")
             elif self.process_states.get(key) == "running":
                 self._set_process_status(key, "Stopped", "stopped")
+
+        if not self.processes["bin_picking"].is_running():
+            self._set_bin_picking_offline()
 
     def _on_close(self) -> None:
         running = [key for key, process in self.processes.items() if process.is_running()]
