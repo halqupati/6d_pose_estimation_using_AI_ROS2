@@ -39,6 +39,11 @@ MAX_MISSING_FRAMES = int(os.environ.get("MAX_MISSING_FRAMES", "6"))
 MIN_MASK_PIXELS = int(os.environ.get("MIN_MASK_PIXELS", "120"))
 MIN_DEPTH_SAMPLES = int(os.environ.get("MIN_DEPTH_SAMPLES", "80"))
 AAE_CROP_PADDING_PX = int(os.environ.get("AAE_CROP_PADDING_PX", "12"))
+OBJECT_YAW_SYMMETRY_DEG = float(os.environ.get("OBJECT_YAW_SYMMETRY_DEG", "60.0"))
+YAW_STABILITY_THRESHOLD_DEG = float(os.environ.get("YAW_STABILITY_THRESHOLD_DEG", "8.0"))
+YAW_OFFSET_DEG = float(os.environ.get("YAW_OFFSET_DEG", "0.0"))
+CONTOUR_WORLD_EPSILON = float(os.environ.get("CONTOUR_WORLD_EPSILON", "0.0015"))
+MIN_WORLD_CONTOUR_POINTS = int(os.environ.get("MIN_WORLD_CONTOUR_POINTS", "30"))
 
 
 class CameraSystem(Node):
@@ -100,11 +105,19 @@ class NutEstimatorAAE(Node):
         self.track_match_distance_px = TRACK_MATCH_DISTANCE_PX
         self.min_mask_pixels = MIN_MASK_PIXELS
         self.min_depth_samples = MIN_DEPTH_SAMPLES
+        self.min_world_contour_points = MIN_WORLD_CONTOUR_POINTS
         self.aae_crop_padding_px = AAE_CROP_PADDING_PX
+        self.object_yaw_symmetry = np.deg2rad(max(1.0, OBJECT_YAW_SYMMETRY_DEG))
+        self.yaw_stability_threshold = np.deg2rad(max(0.5, YAW_STABILITY_THRESHOLD_DEG))
+        self.yaw_offset = np.deg2rad(YAW_OFFSET_DEG)
+        self.contour_world_epsilon = max(1e-4, CONTOUR_WORLD_EPSILON)
         self.missed_frames = 0
         self.yolo_conf_threshold = YOLO_CONF_THRESHOLD
         self.yolo_imgsz = YOLO_IMGSZ
         self.yolo_max_det = YOLO_MAX_DET
+        self.yaw_buffer = []
+        self.last_stable_yaw = None
+        self.last_yaw_source = "N/A"
 
         self.K = np.array(
             [
@@ -144,6 +157,7 @@ class NutEstimatorAAE(Node):
 
     def reset_tracking(self):
         self.pose_buffer = []
+        self.yaw_buffer = []
         self.tracked_center = None
         self.visible_candidate_count = 0
         self.missed_frames = 0
@@ -207,6 +221,7 @@ class NutEstimatorAAE(Node):
                     "box": box,
                     "center": center,
                     "conf": conf,
+                    "mask": mask,
                     "mask_area": mask_area,
                     "t_vec": np.array([tx, ty, z_m], dtype=np.float32),
                     "track_distance": track_distance,
@@ -267,6 +282,137 @@ class NutEstimatorAAE(Node):
         t_camera_nut[:3, :3] = r_mat
         t_camera_nut[:3, 3] = candidate["t_vec"]
         return self.T_wc @ t_camera_nut
+
+    def normalize_angle(self, angle):
+        return (angle + np.pi) % (2.0 * np.pi) - np.pi
+
+    def choose_equivalent_yaw(self, base_yaw, reference_yaw):
+        base_yaw = self.normalize_angle(base_yaw)
+        if reference_yaw is None:
+            return base_yaw
+
+        candidates = [base_yaw + k * self.object_yaw_symmetry for k in range(-6, 7)]
+        return min(
+            candidates,
+            key=lambda yaw: abs(self.normalize_angle(yaw - reference_yaw)),
+        )
+
+    def circular_mean_with_period(self, angles, period, weights=None):
+        if len(angles) == 0:
+            return None
+
+        scaled = np.asarray(angles, dtype=np.float64) * (2.0 * np.pi / period)
+        vectors = np.exp(1j * scaled)
+        if weights is None:
+            mean_vector = np.mean(vectors)
+        else:
+            weights = np.asarray(weights, dtype=np.float64)
+            weight_sum = float(np.sum(weights))
+            if weight_sum <= 0.0:
+                return None
+            mean_vector = np.sum(vectors * weights) / weight_sum
+
+        if abs(mean_vector) < 1e-6:
+            return None
+        mean_angle = np.angle(mean_vector) * (period / (2.0 * np.pi))
+        return self.normalize_angle(mean_angle)
+
+    def pixel_to_world_xy(self, u, v, depth_value):
+        cam_x = (u - self.K[0, 2]) * depth_value / self.K[0, 0]
+        cam_y = (v - self.K[1, 2]) * depth_value / self.K[1, 1]
+        cam_point = np.array([cam_x, cam_y, depth_value, 1.0], dtype=np.float32)
+        world_point = self.T_wc @ cam_point
+        return world_point[:2]
+
+    def extract_world_yaw(self, rotation_matrix):
+        return self.normalize_angle(np.arctan2(rotation_matrix[1, 0], rotation_matrix[0, 0]))
+
+    def build_tabletop_rotation(self, yaw):
+        return R_tool.from_euler("z", yaw).as_matrix()
+
+    def estimate_mask_world_yaw(self, mask, local_depth):
+        mask_u8 = (mask.astype(np.uint8)) * 255
+        inner_mask = cv2.erode(mask_u8, np.ones((3, 3), dtype=np.uint8), iterations=1)
+        contour_source = inner_mask if np.count_nonzero(inner_mask) >= self.min_world_contour_points else mask_u8
+        contours, _ = cv2.findContours(contour_source, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        if not contours:
+            return None
+
+        contour = max(contours, key=cv2.contourArea)
+        if contour is None or len(contour) < self.min_world_contour_points:
+            return None
+
+        contour_points = contour[:, 0, :]
+        sample_step = max(1, len(contour_points) // 180)
+        world_points = []
+
+        for u, v in contour_points[::sample_step]:
+            if not (0 <= v < local_depth.shape[0] and 0 <= u < local_depth.shape[1]):
+                continue
+
+            depth_value = float(local_depth[v, u])
+            if not np.isfinite(depth_value) or depth_value <= 0.05:
+                continue
+
+            world_points.append(self.pixel_to_world_xy(float(u), float(v), depth_value))
+
+        if len(world_points) < self.min_world_contour_points:
+            return None
+
+        world_points = np.asarray(world_points, dtype=np.float32).reshape(-1, 1, 2)
+        hull = cv2.convexHull(world_points)
+        if hull is None or len(hull) < 3:
+            return None
+
+        approx = cv2.approxPolyDP(hull, self.contour_world_epsilon, True)
+        polygon = approx if approx is not None and len(approx) >= 3 else hull
+        polygon_points = polygon[:, 0, :]
+        if len(polygon_points) < 3:
+            return None
+
+        edge_vectors = np.roll(polygon_points, -1, axis=0) - polygon_points
+        edge_lengths = np.linalg.norm(edge_vectors, axis=1)
+        min_edge_length = max(self.contour_world_epsilon * 2.0, 0.002)
+        valid_edges = edge_lengths > min_edge_length
+        if np.count_nonzero(valid_edges) < 3:
+            return None
+
+        edge_angles = np.arctan2(edge_vectors[valid_edges, 1], edge_vectors[valid_edges, 0])
+        edge_weights = edge_lengths[valid_edges]
+        return self.circular_mean_with_period(
+            edge_angles,
+            self.object_yaw_symmetry,
+            edge_weights,
+        )
+
+    def refine_pose_orientation(self, world_pose, candidate, local_depth, matched_track):
+        raw_yaw = self.extract_world_yaw(world_pose[:3, :3])
+        contour_yaw = self.estimate_mask_world_yaw(candidate["mask"], local_depth)
+
+        base_yaw = contour_yaw if contour_yaw is not None else raw_yaw
+        reference_yaw = raw_yaw
+        if matched_track and self.yaw_buffer:
+            reference_yaw = self.yaw_buffer[-1]
+
+        refined_yaw = self.choose_equivalent_yaw(base_yaw + self.yaw_offset, reference_yaw)
+        refined_pose = world_pose.copy()
+        refined_pose[:3, :3] = self.build_tabletop_rotation(refined_yaw)
+        yaw_source = "MASK" if contour_yaw is not None else "AAE"
+        return refined_pose, refined_yaw, yaw_source
+
+    def compute_stable_pose(self):
+        mean_position = np.mean(np.asarray(self.pose_buffer, dtype=np.float32), axis=0)
+        reference_yaw = self.yaw_buffer[-1] if self.yaw_buffer else 0.0
+        normalized_yaws = np.array(
+            [self.choose_equivalent_yaw(yaw, reference_yaw) for yaw in self.yaw_buffer],
+            dtype=np.float32,
+        )
+        mean_yaw = float(np.mean(normalized_yaws))
+
+        stable_pose = np.eye(4, dtype=np.float32)
+        stable_pose[:3, 3] = mean_position
+        stable_pose[:3, :3] = self.build_tabletop_rotation(mean_yaw)
+        return stable_pose, mean_yaw
 
     def draw_candidates(self, image, candidates, selected_candidate=None):
         selected_box = None
@@ -356,6 +502,7 @@ class NutEstimatorAAE(Node):
             self.missed_frames += 1
             if self.missed_frames >= self.max_missing_frames:
                 self.pose_buffer = []
+                self.yaw_buffer = []
                 self.tracked_center = None
                 self.status_text = "NO NUT"
             else:
@@ -366,19 +513,29 @@ class NutEstimatorAAE(Node):
         ranked_candidates = self.rank_candidates(candidates)
         selected_candidate = None
         selected_pose = None
+        selected_yaw = None
         matched_track = False
 
         for candidate in ranked_candidates:
+            candidate_matched_track = (
+                self.tracked_center is not None
+                and candidate["track_distance"] <= self.track_match_distance_px
+            )
             pose = self.estimate_world_pose(local_rgb, candidate)
             if pose is None:
                 continue
 
-            selected_candidate = candidate
-            selected_pose = pose
-            matched_track = (
-                self.tracked_center is not None
-                and candidate["track_distance"] <= self.track_match_distance_px
+            refined_pose, refined_yaw, yaw_source = self.refine_pose_orientation(
+                pose,
+                candidate,
+                local_depth,
+                candidate_matched_track,
             )
+            selected_candidate = candidate
+            selected_pose = refined_pose
+            selected_yaw = refined_yaw
+            matched_track = candidate_matched_track
+            self.last_yaw_source = yaw_source
             break
 
         self.draw_candidates(viz_img, candidates, selected_candidate)
@@ -391,22 +548,34 @@ class NutEstimatorAAE(Node):
 
         if self.tracked_center is None or not matched_track:
             self.pose_buffer = []
+            self.yaw_buffer = []
 
         self.tracked_center = selected_candidate["center"]
         self.missed_frames = 0
 
         current_pos = selected_pose[:3, 3]
         self.pose_buffer.append(current_pos)
+        self.yaw_buffer.append(selected_yaw)
         if len(self.pose_buffer) > self.buffer_size:
             self.pose_buffer.pop(0)
+        if len(self.yaw_buffer) > self.buffer_size:
+            self.yaw_buffer.pop(0)
 
         det_x, det_y = selected_candidate["center"]
 
-        if len(self.pose_buffer) == self.buffer_size:
-            std_dev = np.std(self.pose_buffer, axis=0)
-            if np.all(std_dev < self.stability_threshold):
-                self.last_stable_pose = selected_pose.copy()
-                self.broadcast_and_publish(selected_pose)
+        if len(self.pose_buffer) == self.buffer_size and len(self.yaw_buffer) == self.buffer_size:
+            pos_std = np.std(self.pose_buffer, axis=0)
+            reference_yaw = self.yaw_buffer[-1]
+            normalized_yaws = np.array(
+                [self.choose_equivalent_yaw(yaw, reference_yaw) for yaw in self.yaw_buffer],
+                dtype=np.float32,
+            )
+            yaw_std = float(np.std(normalized_yaws))
+            if np.all(pos_std < self.stability_threshold) and yaw_std < self.yaw_stability_threshold:
+                stable_pose, stable_yaw = self.compute_stable_pose()
+                self.last_stable_pose = stable_pose
+                self.last_stable_yaw = stable_yaw
+                self.broadcast_and_publish(stable_pose)
                 self.waiting_for_pose_ack = True
                 self.status_text = "WAIT ACK"
                 cv2.putText(
@@ -466,6 +635,7 @@ class NutEstimatorAAE(Node):
 
     def broadcast_and_publish(self, mat):
         quat = self.broadcast_transform(mat)
+        yaw = self.extract_world_yaw(mat[:3, :3])
 
         msg = Float32MultiArray()
         msg.data = [
@@ -478,7 +648,9 @@ class NutEstimatorAAE(Node):
             float(quat[3]),
         ]
         self.pos_angle_pub.publish(msg)
-        self.get_logger().info(f"\033[92mStable pose published: {msg.data[:3]}\033[0m")
+        self.get_logger().info(
+            f"\033[92mStable pose published: xyz={msg.data[:3]} yaw={yaw:.3f} source={self.last_yaw_source}\033[0m"
+        )
 
     def decorate_frame(self, frame):
         viz = frame.copy()
@@ -517,11 +689,21 @@ class NutEstimatorAAE(Node):
                 (0, 220, 0),
                 2,
             )
+            if self.last_stable_yaw is not None:
+                cv2.putText(
+                    viz,
+                    f"LAST YAW: {np.degrees(self.last_stable_yaw):.1f} deg ({self.last_yaw_source})",
+                    (20, 175),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (0, 220, 0),
+                    2,
+                )
 
         cv2.putText(
             viz,
             f"CANDIDATES: {self.visible_candidate_count}",
-            (20, 185),
+            (20, 210),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.65,
             (255, 200, 0),
