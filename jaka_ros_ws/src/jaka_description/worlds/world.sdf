@@ -1,7 +1,7 @@
 <?xml version="1.0" ?>
 <sdf version="1.9">
   <world name="empty_world">
-    
+
     <!-- Physics -->
     <physics name="default_physics" type="ode">
       <max_step_size>0.001</max_step_size>
