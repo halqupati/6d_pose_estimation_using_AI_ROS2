@@ -17,7 +17,7 @@ sudo apt install ros-humble-moveit
 sudo apt install ros-humble-moveit-msgs
 ```
 
-Add fuel models [checkerboard_plane  officechairgrey  table] to home/<USERNMAE>/.ignition/fuel/fuel.gazebosim.org/openrobotics/models
+Add fue models [checkerboard_plane  officechairgrey  table]  to home/<USERNMAE>/.ignition/fuel/fuel.gazebosim.org/openrobotics/models
 
 ADD those commands to .bashrc file 
 ```bash
@@ -25,6 +25,10 @@ export IGN_GAZEBO_RESOURCE_PATH=$IGN_GAZEBO_RESOURCE_PATH:/home/ubuntu/6d_pose_e
 
 export IGN_GAZEBO_RESOURCE_PATH=$IGN_GAZEBO_RESOURCE_PATH:home/<USERNMAE>/.ignition/fuel/fuel.gazebosim.org/openrobotics/models
 ```
+
+
+
+
 
 ## Quick launcher
 
@@ -48,6 +52,10 @@ The launcher starts and stops:
 
 The command fields stay editable in the GUI, so if you want to switch the first launch to `..._uder_test.launch.py`, you can change it there without editing the script.
 
+
+
+
+
  ## How to run simualtion (without launcher)
 
 **1) Run gazebo ign, rviz, moviet, run_move_group_node, ros2_control, ros_gz_bridge and depth_image_converter
@@ -69,9 +77,11 @@ conda activate yolov12_py10
 python3 yolo_ros_infer_sim_v11_to_control_jaka_s12.py
 ```
 
+
+
 # Media
 
-## Demo Video
+## Demo Video (old video))
 
 - [Screencast (WEBM)](media_and_files/Screencast%20from%202026-03-12%2000-43-34.webm)
 
@@ -82,6 +92,9 @@ python3 yolo_ros_infer_sim_v11_to_control_jaka_s12.py
 ![Simulation screenshot 1](media_and_files/Screenshot%20from%202026-03-12%2000-17-16.png)
 ![Simulation screenshot 2](media_and_files/Screenshot%20from%202026-03-12%2000-42-18.png)
 ![Simulation screenshot 3](media_and_files/Screenshot%20from%202026-03-12%2000-43-04.png)
+
+
+
 
 
 ### How to run in real world
