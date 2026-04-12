@@ -50,6 +50,27 @@
         <falloff>0.35</falloff>
       </spot>
     </light>
+
+    <!-- Add a softer side light so the nut bore and flats keep readable
+         contrast after the first nut is removed and shadows change. -->
+    <light name="pick_zone_fill_light" type="spot">
+      <pose>-0.18 0.22 1.60 0 0 0</pose>
+      <diffuse>0.62 0.66 0.72 1</diffuse>
+      <specular>0.04 0.04 0.04 1</specular>
+      <cast_shadows>false</cast_shadows>
+      <direction>-0.22 0.28 -0.94</direction>
+      <attenuation>
+        <range>2.5</range>
+        <constant>1.0</constant>
+        <linear>0.18</linear>
+        <quadratic>0.04</quadratic>
+      </attenuation>
+      <spot>
+        <inner_angle>0.35</inner_angle>
+        <outer_angle>0.70</outer_angle>
+        <falloff>0.45</falloff>
+      </spot>
+    </light>
     
 
     <!-- Ground plane -->
@@ -100,28 +121,28 @@
       <include>
         <uri>model://nut</uri>
       </include>
-      <pose>-0.60 0.49 1.015 0 0 1.50</pose>
+      <pose>-0.62 0.48 1.015 0 0 1.35</pose>
     </model>
 
     <model name="nut2">
       <include>
         <uri>model://nut</uri>
       </include>
-      <pose>-0.50 0.52 1.015 0 0 0.35</pose>
+      <pose>-0.51 0.54 1.015 0 0 0.45</pose>
     </model>
 
     <model name="nut3">
       <include>
         <uri>model://nut</uri>
       </include>
-      <pose>-0.40 0.58 1.015 0 0 -0.60</pose>
+      <pose>-0.41 0.62 1.015 0 0 -0.55</pose>
     </model>
 
     <model name="nut4">
       <include>
         <uri>model://nut</uri>
       </include>
-      <pose>-0.50 0.57 1.015 0 0 0.90</pose>
+      <pose>-0.56 0.66 1.015 0 0 0.95</pose>
     </model>
 
    

@@ -51,6 +51,8 @@
       <!-- Keep visual and collision on the same mesh/origin. Also avoid the
            Collada 1.5 warning by using STL instead of the invalid DAE file. -->
       <visual name="visual">
+        <cast_shadows>true</cast_shadows>
+        <transparency>0.0</transparency>
         <geometry>
           <mesh>
             <uri>model://nut/meshes/nut.stl</uri>
@@ -60,10 +62,16 @@
         <!-- A slightly darker, rougher zinc finish gives the RGB cameras
              better edge contrast than the previous near-white material. -->
         <material name="matte_zinc">
-                <ambient>0.20 0.21 0.23 1</ambient>
-                <diffuse>0.42 0.45 0.49 1</diffuse>
-                <specular>0.08 0.08 0.08 1</specular>
-                <emissive>0.015 0.015 0.018 1</emissive>
+                <ambient>0.16 0.17 0.18 1</ambient>
+                <diffuse>0.50 0.53 0.58 1</diffuse>
+                <specular>0.18 0.18 0.18 1</specular>
+                <emissive>0.010 0.010 0.012 1</emissive>
+                <pbr>
+                  <metal>
+                    <metalness>0.35</metalness>
+                    <roughness>0.72</roughness>
+                  </metal>
+                </pbr>
         </material>
       </visual>
     </link>
