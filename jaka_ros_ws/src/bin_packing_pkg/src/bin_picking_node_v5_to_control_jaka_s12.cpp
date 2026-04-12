@@ -818,7 +818,27 @@ private:
         table_obj.primitive_poses.push_back(table_pose);
         table_obj.operation = table_obj.ADD;
 
+
+
+
+        moveit_msgs::msg::CollisionObject table2_obj;
+        table2_obj.header.frame_id = "world";
+        table2_obj.id = "simulation_table2";
+
+
+        geometry_msgs::msg::Pose table2_pose;
+        table2_pose.position.x = 0.0;
+        table2_pose.position.y = 0.81;
+        table2_pose.position.z = -0.507;
+        table2_pose.orientation.w = 1.0;
+
+        table2_obj.primitives.push_back(table_primitive);
+        table2_obj.primitive_poses.push_back(table2_pose);
+        table2_obj.operation = table2_obj.ADD;
+
+
         psi.applyCollisionObject(table_obj);
+        psi.applyCollisionObject(table2_obj);
         collision_timer_->cancel();
     }
 
