@@ -10,7 +10,10 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(tf2_msgs REQUIRED)
+find_package(moveit_core REQUIRED)
+find_package(moveit_ros_planning REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(control_msgs REQUIRED)
@@ -21,8 +24,7 @@ find_package(geometric_shapes REQUIRED)
 set(executable_list
   bin_picking_node_v7_to_control_jaka_s12
   bin_picking_node_v5_to_control_jaka_s12
-
-
+  collision_monitor_node
 )
 
 foreach(loop_var IN LISTS executable_list)
@@ -31,7 +33,10 @@ foreach(loop_var IN LISTS executable_list)
     rclcpp
     geometry_msgs
     sensor_msgs
+    std_msgs
     tf2_msgs
+    moveit_core
+    moveit_ros_planning
     moveit_ros_planning_interface
     rclcpp_action
     control_msgs
