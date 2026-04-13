@@ -50,7 +50,7 @@ public:
         lift_height_ = this->declare_parameter<double>("lift_height", 0.10);
         tool_center_offset_ = this->declare_parameter<double>("tool_center_offset", 0.019);
         grasp_final_offset_ = this->declare_parameter<double>("grasp_final_offset", 0.0);
-        grasp_descent_step_ = this->declare_parameter<double>("grasp_descent_step", 0.002);
+        grasp_descent_step_ = this->declare_parameter<double>("grasp_descent_step", 0.008);  // changed from 0.002
         pick_approach_offset_ = this->declare_parameter<double>("pick_approach_offset", 0.020);
         pick_safe_gap_z_ = this->declare_parameter<double>("pick_safe_gap_z", 0.003);
         detected_nut_height_ = this->declare_parameter<double>("detected_nut_height", 0.008);
@@ -61,8 +61,8 @@ public:
         pick_clearance_z_ = this->declare_parameter<double>("pick_clearance_z", 0.01);
         table_top_z_ = this->declare_parameter<double>("table_top_z", -0.06);
 
-        arm_velocity_scaling_ = this->declare_parameter<double>("arm_velocity_scaling", 0.70);
-        arm_acceleration_scaling_ = this->declare_parameter<double>("arm_acceleration_scaling", 0.30);
+        arm_velocity_scaling_ = this->declare_parameter<double>("arm_velocity_scaling", 5);
+        arm_acceleration_scaling_ = this->declare_parameter<double>("arm_acceleration_scaling", 1);
         arm_planning_time_ = this->declare_parameter<double>("arm_planning_time", 5.0);
 
         gripper_open_cmd_ = this->declare_parameter<double>("gripper_open_cmd", 0.0);
@@ -70,7 +70,7 @@ public:
         gripper_min_position_ = this->declare_parameter<double>("gripper_min_position", -0.026);
         gripper_max_position_ = this->declare_parameter<double>("gripper_max_position", 0.001);
         empty_close_threshold_ = this->declare_parameter<double>("empty_close_threshold", -0.023);
-        gripper_motion_duration_ = this->declare_parameter<double>("gripper_motion_duration", 0.6);
+        gripper_motion_duration_ = this->declare_parameter<double>("gripper_motion_duration", 0.2);  // changed from 0.6
         gripper_settle_time_ = this->declare_parameter<double>("gripper_settle_time", 0.1);
 
         rclcpp::SubscriptionOptions sub_options;
@@ -208,10 +208,13 @@ private:
 
         double new_arm_velocity_scaling = arm_velocity_scaling_;
         double new_arm_acceleration_scaling = arm_acceleration_scaling_;
+        double new_grasp_descent_step = grasp_descent_step_;
+        double new_gripper_motion_duration = gripper_motion_duration_;
         double new_pick_safe_gap_z = pick_safe_gap_z_;
         double new_detected_nut_height = detected_nut_height_;
         double new_min_grasp_tcp_above_table = min_grasp_tcp_above_table_;
         bool motion_profile_requested = false;
+        bool pick_timing_requested = false;
         bool pick_safety_requested = false;
 
         for (const auto &parameter : parameters) {
@@ -233,6 +236,24 @@ private:
                 }
                 new_arm_acceleration_scaling = value;
                 motion_profile_requested = true;
+            } else if (parameter.get_name() == "grasp_descent_step") {
+                const double value = parameter.as_double();
+                if (value <= 0.0) {
+                    result.successful = false;
+                    result.reason = "grasp_descent_step must be > 0.0.";
+                    return result;
+                }
+                new_grasp_descent_step = value;
+                pick_timing_requested = true;
+            } else if (parameter.get_name() == "gripper_motion_duration") {
+                const double value = parameter.as_double();
+                if (value <= 0.0) {
+                    result.successful = false;
+                    result.reason = "gripper_motion_duration must be > 0.0.";
+                    return result;
+                }
+                new_gripper_motion_duration = value;
+                pick_timing_requested = true;
             } else if (parameter.get_name() == "pick_safe_gap_z") {
                 const double value = parameter.as_double();
                 if (value < 0.0) {
@@ -265,6 +286,8 @@ private:
 
         arm_velocity_scaling_ = new_arm_velocity_scaling;
         arm_acceleration_scaling_ = new_arm_acceleration_scaling;
+        grasp_descent_step_ = new_grasp_descent_step;
+        gripper_motion_duration_ = new_gripper_motion_duration;
         pick_safe_gap_z_ = new_pick_safe_gap_z;
         detected_nut_height_ = new_detected_nut_height;
         min_grasp_tcp_above_table_ = new_min_grasp_tcp_above_table;
@@ -280,6 +303,14 @@ private:
                 "Updated motion profile: velocity_scaling=%.2f acceleration_scaling=%.2f",
                 arm_velocity_scaling_,
                 arm_acceleration_scaling_);
+        }
+
+        if (pick_timing_requested) {
+            RCLCPP_INFO(
+                this->get_logger(),
+                "Updated pick timing: grasp_descent_step=%.4f gripper_motion_duration=%.2f",
+                grasp_descent_step_,
+                gripper_motion_duration_);
         }
 
         if (pick_safety_requested) {
@@ -585,7 +616,7 @@ private:
         }
 
         return executeTimedTrajectory(
-            arm_group_, arm_group_name_, plan.trajectory_, arm_velocity_scaling_, arm_acceleration_scaling_, false);
+            arm_group_, arm_group_name_, plan.trajectory_, arm_velocity_scaling_, arm_acceleration_scaling_, true);
     }
 
     bool moveArmToJointTarget(const std::vector<double> &joints)
@@ -611,7 +642,7 @@ private:
         }
 
         return executeTimedTrajectory(
-            arm_group_, arm_group_name_, plan.trajectory_, arm_velocity_scaling_, arm_acceleration_scaling_, false);
+            arm_group_, arm_group_name_, plan.trajectory_, arm_velocity_scaling_, arm_acceleration_scaling_, true);
     }
 
     bool moveCartesian(double x, double y, double z, double min_fraction = 0.90, bool avoid_collisions = true)

@@ -359,8 +359,12 @@ class ProjectLauncherApp:
 
         self.velocity_var = tk.DoubleVar(value=0.55)
         self.acceleration_var = tk.DoubleVar(value=0.40)
+        self.grasp_descent_step_var = tk.DoubleVar(value=0.002)
+        self.gripper_motion_duration_var = tk.DoubleVar(value=1.20)
         self.velocity_text = tk.StringVar()
         self.acceleration_text = tk.StringVar()
+        self.grasp_descent_step_text = tk.StringVar()
+        self.gripper_motion_duration_text = tk.StringVar()
         self.robot_status_text = tk.StringVar(value="Stopped")
         self.robot_detail_text = tk.StringVar(value="Launcher idle")
         self.robot_status_label: tk.Label | None = None
@@ -522,7 +526,7 @@ class ProjectLauncherApp:
         tk.Label(motion_card, text="Motion Profile", bg=PANEL_BG, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
         tk.Label(
             motion_card,
-            text="Use this to make the robot safer or faster. Apply live while bin-picking is running.",
+            text="Velocity and acceleration affect MoveIt retiming. Grasp descent step and gripper duration often have the biggest effect on cycle time.",
             bg=PANEL_BG,
             fg=TEXT,
             wraplength=520,
@@ -532,12 +536,51 @@ class ProjectLauncherApp:
 
         self._build_slider_row(motion_card, "Velocity", self.velocity_var, self.velocity_text)
         self._build_slider_row(motion_card, "Acceleration", self.acceleration_var, self.acceleration_text)
+        self._build_slider_row(
+            motion_card,
+            "Descent Step",
+            self.grasp_descent_step_var,
+            self.grasp_descent_step_text,
+            from_=0.001,
+            to=0.012,
+            resolution=0.001,
+        )
+        self._build_slider_row(
+            motion_card,
+            "Gripper Time",
+            self.gripper_motion_duration_var,
+            self.gripper_motion_duration_text,
+            from_=0.10,
+            to=1.50,
+            resolution=0.05,
+        )
 
         preset_row = tk.Frame(motion_card, bg=PANEL_BG)
         preset_row.pack(fill=tk.X, pady=(10, 0))
-        self._make_button(preset_row, "Safe", "#334155", "#1E293B", lambda: self.set_motion_profile(0.30, 0.25), width=10).pack(side=tk.LEFT)
-        self._make_button(preset_row, "Balanced", "#2563EB", "#1D4ED8", lambda: self.set_motion_profile(0.55, 0.40), width=10).pack(side=tk.LEFT, padx=(8, 0))
-        self._make_button(preset_row, "Fast", "#7C3AED", "#5B21B6", lambda: self.set_motion_profile(0.80, 0.60), width=10).pack(side=tk.LEFT, padx=(8, 0))
+        self._make_button(
+            preset_row,
+            "Safe",
+            "#334155",
+            "#1E293B",
+            lambda: self.set_motion_profile(0.30, 0.25, 0.003, 1.00),
+            width=10,
+        ).pack(side=tk.LEFT)
+        self._make_button(
+            preset_row,
+            "Balanced",
+            "#2563EB",
+            "#1D4ED8",
+            lambda: self.set_motion_profile(0.55, 0.40, 0.005, 0.70),
+            width=10,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        self._make_button(
+            preset_row,
+            "Fast",
+            "#7C3AED",
+            "#5B21B6",
+            lambda: self.set_motion_profile(0.80, 0.60, 0.008, 0.35),
+            width=10,
+        ).pack(side=tk.LEFT, padx=(8, 0))
         self._make_button(preset_row, "Apply Live", START, START_ACTIVE, self.apply_motion_profile, width=12).pack(side=tk.RIGHT)
 
         telemetry_card = tk.Frame(dashboard, bg=PANEL_BG, padx=18, pady=16, highlightthickness=1, highlightbackground="#1F2937")
@@ -756,15 +799,24 @@ class ProjectLauncherApp:
         self._update_collision_indicator()
         self.root.after(0, lambda: main_pane.sashpos(0, max(420, int(self.root.winfo_height() * 0.64))))
 
-    def _build_slider_row(self, parent: tk.Widget, label: str, variable: tk.DoubleVar, text_var: tk.StringVar) -> None:
+    def _build_slider_row(
+        self,
+        parent: tk.Widget,
+        label: str,
+        variable: tk.DoubleVar,
+        text_var: tk.StringVar,
+        from_: float = 0.10,
+        to: float = 1.00,
+        resolution: float = 0.05,
+    ) -> None:
         row = tk.Frame(parent, bg=PANEL_BG)
         row.pack(fill=tk.X, pady=4)
         tk.Label(row, text=label, bg=PANEL_BG, fg=TEXT, width=12, anchor="w").pack(side=tk.LEFT)
         scale = tk.Scale(
             row,
-            from_=0.10,
-            to=1.00,
-            resolution=0.05,
+            from_=from_,
+            to=to,
+            resolution=resolution,
             orient=tk.HORIZONTAL,
             showvalue=False,
             variable=variable,
@@ -966,6 +1018,8 @@ class ProjectLauncherApp:
             {
                 "arm_velocity_scaling": f"{self.velocity_var.get():.2f}",
                 "arm_acceleration_scaling": f"{self.acceleration_var.get():.2f}",
+                "grasp_descent_step": f"{self.grasp_descent_step_var.get():.4f}",
+                "gripper_motion_duration": f"{self.gripper_motion_duration_var.get():.2f}",
             },
         )
 
@@ -1000,24 +1054,45 @@ class ProjectLauncherApp:
     def _on_motion_profile_changed(self) -> None:
         self.velocity_text.set(f"{self.velocity_var.get():.2f}")
         self.acceleration_text.set(f"{self.acceleration_var.get():.2f}")
+        self.grasp_descent_step_text.set(f"{self.grasp_descent_step_var.get():.4f}")
+        self.gripper_motion_duration_text.set(f"{self.gripper_motion_duration_var.get():.2f}")
         if hasattr(self, "command_vars") and "bin_picking" in self.command_vars:
             self._refresh_dynamic_commands()
         self._recompute_robot_status()
 
-    def set_motion_profile(self, velocity: float, acceleration: float) -> None:
+    def set_motion_profile(
+        self,
+        velocity: float,
+        acceleration: float,
+        grasp_descent_step: float | None = None,
+        gripper_motion_duration: float | None = None,
+    ) -> None:
         self.velocity_var.set(velocity)
         self.acceleration_var.set(acceleration)
+        if grasp_descent_step is not None:
+            self.grasp_descent_step_var.set(grasp_descent_step)
+        if gripper_motion_duration is not None:
+            self.gripper_motion_duration_var.set(gripper_motion_duration)
         self._on_motion_profile_changed()
 
     def apply_motion_profile(self) -> None:
         self._refresh_dynamic_commands()
         velocity = self.velocity_var.get()
         acceleration = self.acceleration_var.get()
-        self._append_log("bin_picking", f"[launcher] motion profile selected: velocity={velocity:.2f}, acceleration={acceleration:.2f}\n")
+        grasp_descent_step = self.grasp_descent_step_var.get()
+        gripper_motion_duration = self.gripper_motion_duration_var.get()
+        self._append_log(
+            "bin_picking",
+            "[launcher] motion profile selected: "
+            f"velocity={velocity:.2f}, acceleration={acceleration:.2f}, "
+            f"grasp_descent_step={grasp_descent_step:.4f}, gripper_motion_duration={gripper_motion_duration:.2f}\n",
+        )
 
         if not self.processes.get("bin_picking") or not self.processes["bin_picking"].is_running():
             self.robot_detail_text.set(
-                f"Motion profile prepared for next start: velocity={velocity:.2f}, acceleration={acceleration:.2f}."
+                "Motion profile prepared for next start: "
+                f"velocity={velocity:.2f}, acceleration={acceleration:.2f}, "
+                f"grasp_descent_step={grasp_descent_step:.4f}, gripper_motion_duration={gripper_motion_duration:.2f}."
             )
             self._recompute_robot_status()
             return
@@ -1027,10 +1102,14 @@ class ProjectLauncherApp:
     def _apply_motion_profile_live(self) -> None:
         velocity = self.velocity_var.get()
         acceleration = self.acceleration_var.get()
+        grasp_descent_step = self.grasp_descent_step_var.get()
+        gripper_motion_duration = self.gripper_motion_duration_var.get()
         node_name = "/bin_picking_node_v5_to_control_jaka_s12"
         command = build_ros_shell_command(
             f"ros2 param set {shlex.quote(node_name)} arm_velocity_scaling {velocity:.2f} && "
-            f"ros2 param set {shlex.quote(node_name)} arm_acceleration_scaling {acceleration:.2f}"
+            f"ros2 param set {shlex.quote(node_name)} arm_acceleration_scaling {acceleration:.2f} && "
+            f"ros2 param set {shlex.quote(node_name)} grasp_descent_step {grasp_descent_step:.4f} && "
+            f"ros2 param set {shlex.quote(node_name)} gripper_motion_duration {gripper_motion_duration:.2f}"
         )
         self.log_queue.put(("log", "bin_picking", f"$ {command}\n"))
         completed = subprocess.run(
@@ -1046,7 +1125,9 @@ class ProjectLauncherApp:
 
         if completed.returncode == 0:
             self.robot_detail_text.set(
-                f"Applied live motion profile: velocity={velocity:.2f}, acceleration={acceleration:.2f}."
+                "Applied live motion profile: "
+                f"velocity={velocity:.2f}, acceleration={acceleration:.2f}, "
+                f"grasp_descent_step={grasp_descent_step:.4f}, gripper_motion_duration={gripper_motion_duration:.2f}."
             )
         else:
             self.warning_until = time.time() + WARNING_WINDOW_SEC

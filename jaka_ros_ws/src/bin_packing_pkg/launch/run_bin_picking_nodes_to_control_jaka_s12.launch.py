@@ -21,6 +21,8 @@ def generate_launch_description():
 
     arm_velocity_scaling = LaunchConfiguration("arm_velocity_scaling")
     arm_acceleration_scaling = LaunchConfiguration("arm_acceleration_scaling")
+    grasp_descent_step = LaunchConfiguration("grasp_descent_step")
+    gripper_motion_duration = LaunchConfiguration("gripper_motion_duration")
     pick_safe_gap_z = LaunchConfiguration("pick_safe_gap_z")
     detected_nut_height = LaunchConfiguration("detected_nut_height")
     min_grasp_tcp_above_table = LaunchConfiguration("min_grasp_tcp_above_table")
@@ -57,7 +59,7 @@ def generate_launch_description():
                 "flange_link": "grasp_tcp",
                 "tool_center_offset": 0.019,
                 "grasp_final_offset": 0.0,
-                "grasp_descent_step": 0.002,
+                "grasp_descent_step": grasp_descent_step,
                 "pick_approach_offset": 0.020,
                 "pick_safe_gap_z": pick_safe_gap_z,
                 "detected_nut_height": detected_nut_height,
@@ -76,7 +78,7 @@ def generate_launch_description():
                 "gripper_open_cmd": 0.0,
                 "gripper_close_cmd": -0.025,
                 "empty_close_threshold": -0.023,
-                "gripper_motion_duration": 1.2,
+                "gripper_motion_duration": gripper_motion_duration,
                 "gripper_settle_time": 0.2,
             },
         ],
@@ -103,6 +105,8 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("arm_velocity_scaling", default_value="0.30"),
             DeclareLaunchArgument("arm_acceleration_scaling", default_value="0.30"),
+            DeclareLaunchArgument("grasp_descent_step", default_value="0.002"),
+            DeclareLaunchArgument("gripper_motion_duration", default_value="1.20"),
             DeclareLaunchArgument("pick_safe_gap_z", default_value="0.003"),
             DeclareLaunchArgument("detected_nut_height", default_value="0.008"),
             DeclareLaunchArgument("min_grasp_tcp_above_table", default_value="0.020"),
