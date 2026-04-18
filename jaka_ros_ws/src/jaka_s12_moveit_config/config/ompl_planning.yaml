@@ -18,7 +18,7 @@ ompl:
       goal_bias: 0.05
       delay_collision_checking: 1
 
-jaka_zu5:
+jaka_s12:
   planner_configs:
     - RRTConnectkConfigDefault
     - RRTstarkConfigDefault
