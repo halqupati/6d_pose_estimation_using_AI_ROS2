@@ -13,6 +13,7 @@ jaka_ros_ws/src/jaka_s12_moveit_config/launch/__pycache__/jaka_s12_moveit_gazebo
 aae_infer/autoencoder_ws/experiments/exp_group/my_autoencoder/checkpoints
 /aae_infer/autoencoder_ws/tmp_datasets
 
+jaka_ros_ws/src/hexnut_6d_planner/hexnut_6d_planner/__pycache__
 
 
 yolov12_seg_infer/__pycache__
