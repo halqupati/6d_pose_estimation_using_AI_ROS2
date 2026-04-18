@@ -28,6 +28,29 @@ METHODS = {
     "DANIILIDIS": cv2.CALIB_HAND_EYE_DANIILIDIS,
 }
 
+DICTIONARY_FAMILIES = {
+    "DICT_4X4_50": ("DICT_4X4_50", "DICT_4X4_100", "DICT_4X4_250", "DICT_4X4_1000"),
+    "DICT_4X4_100": ("DICT_4X4_100", "DICT_4X4_50", "DICT_4X4_250", "DICT_4X4_1000"),
+    "DICT_4X4_250": ("DICT_4X4_250", "DICT_4X4_100", "DICT_4X4_50", "DICT_4X4_1000"),
+    "DICT_4X4_1000": ("DICT_4X4_1000", "DICT_4X4_250", "DICT_4X4_100", "DICT_4X4_50"),
+    "DICT_5X5_50": ("DICT_5X5_50", "DICT_5X5_100", "DICT_5X5_250", "DICT_5X5_1000"),
+    "DICT_5X5_100": ("DICT_5X5_100", "DICT_5X5_50", "DICT_5X5_250", "DICT_5X5_1000"),
+    "DICT_5X5_250": ("DICT_5X5_250", "DICT_5X5_100", "DICT_5X5_50", "DICT_5X5_1000"),
+    "DICT_5X5_1000": ("DICT_5X5_1000", "DICT_5X5_250", "DICT_5X5_100", "DICT_5X5_50"),
+    "DICT_6X6_50": ("DICT_6X6_50", "DICT_6X6_100", "DICT_6X6_250", "DICT_6X6_1000"),
+    "DICT_6X6_100": ("DICT_6X6_100", "DICT_6X6_50", "DICT_6X6_250", "DICT_6X6_1000"),
+    "DICT_6X6_250": ("DICT_6X6_250", "DICT_6X6_100", "DICT_6X6_50", "DICT_6X6_1000"),
+    "DICT_6X6_1000": ("DICT_6X6_1000", "DICT_6X6_250", "DICT_6X6_100", "DICT_6X6_50"),
+}
+
+
+@dataclass
+class BoardCandidate:
+    name: str
+    squares_x: int
+    squares_y: int
+    board: object
+
 
 @dataclass
 class DetectionResult:
@@ -40,6 +63,13 @@ class DetectionResult:
     marker_count: int = 0
     charuco_count: int = 0
     pose_source: str = ""
+    dictionary_name: str = ""
+    board_name: str = ""
+    preprocess_name: str = ""
+    marker_corners: Optional[list] = None
+    marker_ids: Optional[np.ndarray] = None
+    charuco_corners: Optional[np.ndarray] = None
+    charuco_ids: Optional[np.ndarray] = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -215,6 +245,58 @@ def rotation_angle_deg(rot: np.ndarray) -> float:
     return math.degrees(math.acos(clipped))
 
 
+def create_detector_params():
+    params = cv2.aruco.DetectorParameters_create()
+    params.adaptiveThreshWinSizeMin = 3
+    params.adaptiveThreshWinSizeMax = 53
+    params.adaptiveThreshWinSizeStep = 10
+    params.minMarkerPerimeterRate = 0.01
+    params.maxMarkerPerimeterRate = 4.0
+    params.polygonalApproxAccuracyRate = 0.03
+    params.minCornerDistanceRate = 0.03
+    if hasattr(cv2.aruco, "CORNER_REFINE_SUBPIX"):
+        params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        params.cornerRefinementWinSize = 5
+        params.cornerRefinementMaxIterations = 50
+    return params
+
+
+def dictionary_name_candidates(requested_name: str) -> list[str]:
+    names = [requested_name]
+    if requested_name in DICTIONARY_FAMILIES:
+        for candidate in DICTIONARY_FAMILIES[requested_name]:
+            if candidate not in names:
+                names.append(candidate)
+    return [name for name in names if getattr(cv2.aruco, name, None) is not None]
+
+
+def build_board_candidates(board_params: dict, dictionary) -> list[BoardCandidate]:
+    square_length = float(board_params["square_length_m"])
+    marker_length = float(board_params["marker_length_m"])
+    squares_x = int(board_params["squares_x"])
+    squares_y = int(board_params["squares_y"])
+    candidates = []
+    for candidate_x, candidate_y in [(squares_x, squares_y), (squares_y, squares_x)]:
+        name = f"{candidate_x}x{candidate_y}"
+        if any(candidate.name == name for candidate in candidates):
+            continue
+        candidates.append(
+            BoardCandidate(
+                name=name,
+                squares_x=candidate_x,
+                squares_y=candidate_y,
+                board=cv2.aruco.CharucoBoard_create(
+                    candidate_x,
+                    candidate_y,
+                    square_length,
+                    marker_length,
+                    dictionary,
+                ),
+            )
+        )
+    return candidates
+
+
 class EyeInHandCalibrationNode(Node):
     def __init__(self, args: argparse.Namespace, board_params: dict, run_dir: Path) -> None:
         super().__init__("eye_in_hand_charuco_calibration")
@@ -243,22 +325,28 @@ class EyeInHandCalibrationNode(Node):
         self.preview_image = np.zeros((720, 960, 3), dtype=np.uint8)
         self.last_status = "Waiting for image and camera info..."
 
-        dictionary_id = getattr(cv2.aruco, board_params["aruco_dictionary"], None)
-        if dictionary_id is None:
-            raise ValueError(f"Unknown ArUco dictionary: {board_params['aruco_dictionary']}")
-        self.dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
-        self.detector_params = cv2.aruco.DetectorParameters_create()
-        self.board = cv2.aruco.CharucoBoard_create(
-            int(board_params["squares_x"]),
-            int(board_params["squares_y"]),
-            float(board_params["square_length_m"]),
-            float(board_params["marker_length_m"]),
-            self.dictionary,
-        )
+        self.requested_dictionary_name = board_params["aruco_dictionary"]
+        self.dictionary_names = dictionary_name_candidates(self.requested_dictionary_name)
+        if not self.dictionary_names:
+            raise ValueError(f"Unknown ArUco dictionary: {self.requested_dictionary_name}")
+        self.dictionaries = {
+            name: cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, name))
+            for name in self.dictionary_names
+        }
+        self.board_candidates = {
+            dictionary_name: build_board_candidates(board_params, dictionary)
+            for dictionary_name, dictionary in self.dictionaries.items()
+        }
+        self.detector_params = create_detector_params()
+        self.locked_dictionary_name: Optional[str] = None
+        self.locked_board_name: Optional[str] = None
 
         self.create_subscription(Image, self.image_topic, self.on_image, qos_profile_sensor_data)
         self.create_subscription(CameraInfo, self.camera_info_topic, self.on_camera_info, qos_profile_sensor_data)
 
+        candidate_board_names = ", ".join(
+            candidate.name for candidate in self.board_candidates[self.dictionary_names[0]]
+        )
         self.get_logger().info(
             "Eye-in-hand calibration started. "
             f"image={self.image_topic}, camera_info={self.camera_info_topic}, "
@@ -269,7 +357,12 @@ class EyeInHandCalibrationNode(Node):
             f"{board_params['squares_x']}x{board_params['squares_y']}, "
             f"square={board_params['square_length_m']:.6f} m, "
             f"marker={board_params['marker_length_m']:.6f} m, "
-            f"dict={board_params['aruco_dictionary']}"
+            f"dict={self.requested_dictionary_name}"
+        )
+        self.get_logger().info(
+            "Detection fallbacks: "
+            f"dictionaries={', '.join(self.dictionary_names)}; "
+            f"board_variants={candidate_board_names}"
         )
 
     def on_image(self, msg: Image) -> None:
@@ -308,71 +401,35 @@ class EyeInHandCalibrationNode(Node):
         )
 
         if self.camera_matrix is not None and self.dist_coeffs is not None:
-            gray = cv2.cvtColor(display, cv2.COLOR_BGR2GRAY)
-            marker_corners, marker_ids, _ = cv2.aruco.detectMarkers(
-                gray, self.dictionary, parameters=self.detector_params
-            )
-            detection.marker_count = 0 if marker_ids is None else len(marker_ids)
-            if marker_ids is not None and len(marker_ids) > 0:
-                cv2.aruco.drawDetectedMarkers(display, marker_corners, marker_ids)
-                _, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
-                    marker_corners, marker_ids, gray, self.board, self.camera_matrix, self.dist_coeffs
+            detection = self._detect_board(display, image_stamp, image_frame)
+            if detection.marker_ids is not None and len(detection.marker_ids) > 0:
+                cv2.aruco.drawDetectedMarkers(display, detection.marker_corners, detection.marker_ids)
+            if detection.charuco_ids is not None and len(detection.charuco_ids) > 0:
+                cv2.aruco.drawDetectedCornersCharuco(
+                    display,
+                    detection.charuco_corners,
+                    detection.charuco_ids,
                 )
-                detection.charuco_count = 0 if charuco_ids is None else len(charuco_ids)
 
-                pose_found = False
-                if charuco_ids is not None and len(charuco_ids) >= 4:
-                    ok, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(
-                        charuco_corners,
-                        charuco_ids,
-                        self.board,
-                        self.camera_matrix,
-                        self.dist_coeffs,
-                        None,
-                        None,
-                    )
-                    pose_found = bool(ok)
-                    if pose_found:
-                        detection.found = True
-                        detection.rvec = rvec.reshape(3, 1)
-                        detection.tvec = tvec.reshape(3, 1)
-                        detection.pose_source = "charuco"
-                        cv2.aruco.drawDetectedCornersCharuco(display, charuco_corners, charuco_ids)
-                if not pose_found and marker_ids is not None and len(marker_ids) >= 4:
-                    retval, rvec, tvec = cv2.aruco.estimatePoseBoard(
-                        marker_corners,
-                        marker_ids,
-                        self.board,
-                        self.camera_matrix,
-                        self.dist_coeffs,
-                        None,
-                        None,
-                    )
-                    if retval > 0:
-                        detection.found = True
-                        detection.rvec = rvec.reshape(3, 1)
-                        detection.tvec = tvec.reshape(3, 1)
-                        detection.pose_source = "board"
-
-                if detection.found:
-                    cv2.drawFrameAxes(
-                        display,
-                        self.camera_matrix,
-                        self.dist_coeffs,
-                        detection.rvec,
-                        detection.tvec,
-                        float(self.board_params["square_length_m"]) * 1.5,
-                        2,
-                    )
-                    self.last_status = (
-                        f"Board detected via {detection.pose_source}. markers={detection.marker_count} "
-                        f"charuco={detection.charuco_count}"
-                    )
-                else:
-                    self.last_status = (
-                        f"Markers found={detection.marker_count}, but board pose failed. "
-                        "Move closer or reduce glare."
-                    )
+            if detection.found:
+                cv2.drawFrameAxes(
+                    display,
+                    self.camera_matrix,
+                    self.dist_coeffs,
+                    detection.rvec,
+                    detection.tvec,
+                    float(self.board_params["square_length_m"]) * 1.5,
+                    2,
+                )
+                self.last_status = (
+                    f"Board detected via {detection.pose_source}. "
+                    f"markers={detection.marker_count} charuco={detection.charuco_count}"
+                )
+            elif detection.marker_count > 0:
+                self.last_status = (
+                    f"Markers found={detection.marker_count}, but board pose failed. "
+                    "Move closer or reduce glare."
+                )
             else:
                 self.last_status = "Board not detected."
         else:
@@ -382,7 +439,8 @@ class EyeInHandCalibrationNode(Node):
             self.last_status,
             f"samples={len(self.samples)} min_required={self.args.min_samples}",
             f"image_frame={image_frame}",
-            f"Press c=capture, s=solve, r=reset, q=quit",
+            self._detection_hint_text(detection),
+            "Press c=capture, s=solve, r=reset, q=quit",
         ]
         for index, text in enumerate(overlay_lines):
             cv2.putText(
@@ -397,12 +455,21 @@ class EyeInHandCalibrationNode(Node):
             )
 
         self.preview_image = display
+        detection.image = display
         self.last_detection = detection
 
     def capture_sample(self) -> None:
         if self.last_detection is None or not self.last_detection.found:
             self.get_logger().warn("Cannot capture sample: no valid board pose in the current frame.")
             return
+
+        if self.locked_dictionary_name is None:
+            self.locked_dictionary_name = self.last_detection.dictionary_name
+            self.locked_board_name = self.last_detection.board_name
+            self.get_logger().info(
+                f"Locked detection settings to dict={self.locked_dictionary_name}, "
+                f"board={self.locked_board_name}"
+            )
 
         try:
             gripper_tf = self._lookup_transform(
@@ -426,6 +493,9 @@ class EyeInHandCalibrationNode(Node):
             "pose_source": self.last_detection.pose_source,
             "marker_count": int(self.last_detection.marker_count),
             "charuco_count": int(self.last_detection.charuco_count),
+            "dictionary_name": self.last_detection.dictionary_name,
+            "board_name": self.last_detection.board_name,
+            "preprocess_name": self.last_detection.preprocess_name,
             "b_T_g": b_t_g,
             "c_T_t": c_t_t,
         }
@@ -437,7 +507,8 @@ class EyeInHandCalibrationNode(Node):
 
         self.get_logger().info(
             f"Captured sample {sample_index}: pose_source={sample['pose_source']} "
-            f"image_frame={sample['image_frame']}"
+            f"dict={sample['dictionary_name']} board={sample['board_name']} "
+            f"prep={sample['preprocess_name']} image_frame={sample['image_frame']}"
         )
 
     def solve(self) -> None:
@@ -451,6 +522,15 @@ class EyeInHandCalibrationNode(Node):
         image_frame = self.samples[0]["image_frame"]
         if any(sample["image_frame"] != image_frame for sample in self.samples):
             self.get_logger().warn("Captured samples use multiple image frames. Restart with a single camera stream.")
+            return
+
+        dictionary_name = self.samples[0]["dictionary_name"]
+        board_name = self.samples[0]["board_name"]
+        if any(sample["dictionary_name"] != dictionary_name for sample in self.samples):
+            self.get_logger().warn("Captured samples use multiple ArUco dictionaries. Reset and recollect samples.")
+            return
+        if any(sample["board_name"] != board_name for sample in self.samples):
+            self.get_logger().warn("Captured samples use multiple board orientations. Reset and recollect samples.")
             return
 
         mount_t_image = np.eye(4, dtype=np.float64)
@@ -515,6 +595,8 @@ class EyeInHandCalibrationNode(Node):
                 "image_topic": self.image_topic,
                 "camera_info_topic": self.camera_info_topic,
                 "sample_count": len(self.samples),
+                "dictionary_name": dictionary_name,
+                "board_name": board_name,
                 "board": self.board_params,
             },
             "best_method": best_method,
@@ -541,7 +623,185 @@ class EyeInHandCalibrationNode(Node):
 
     def reset(self) -> None:
         self.samples.clear()
-        self.get_logger().info("Cleared captured samples.")
+        self.locked_dictionary_name = None
+        self.locked_board_name = None
+        self.get_logger().info("Cleared captured samples and unlocked detection settings.")
+
+    def _candidate_dictionary_names(self) -> list[str]:
+        if self.locked_dictionary_name is not None:
+            return [self.locked_dictionary_name]
+        return self.dictionary_names
+
+    def _candidate_boards(self, dictionary_name: str) -> list[BoardCandidate]:
+        candidates = self.board_candidates[dictionary_name]
+        if self.locked_board_name is not None:
+            return [candidate for candidate in candidates if candidate.name == self.locked_board_name]
+        return candidates
+
+    def _gray_variants(self, gray: np.ndarray) -> list[tuple[str, np.ndarray]]:
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+        normalized = cv2.normalize(gray, None, 0, 255, cv2.NORM_MINMAX)
+        blurred = cv2.GaussianBlur(gray, (0, 0), 1.2)
+        sharpened = cv2.addWeighted(gray, 1.7, blurred, -0.7, 0.0)
+        return [
+            ("raw", gray),
+            ("clahe", clahe),
+            ("normalized", normalized),
+            ("sharpened", sharpened),
+        ]
+
+    def _candidate_score(self, detection: DetectionResult) -> tuple[int, int, int]:
+        return (
+            1 if detection.found else 0,
+            int(detection.charuco_count),
+            int(detection.marker_count),
+        )
+
+    def _try_board_candidate(
+        self,
+        gray_variant: np.ndarray,
+        image_stamp: Time,
+        image_frame: str,
+        dictionary_name: str,
+        dictionary,
+        board_candidate: BoardCandidate,
+        preprocess_name: str,
+    ) -> DetectionResult:
+        marker_corners, marker_ids, rejected = cv2.aruco.detectMarkers(
+            gray_variant, dictionary, parameters=self.detector_params
+        )
+        marker_count = 0 if marker_ids is None else len(marker_ids)
+
+        if marker_count == 0:
+            return DetectionResult(
+                found=False,
+                image=np.zeros((1, 1, 3), dtype=np.uint8),
+                image_stamp=image_stamp,
+                image_frame=image_frame,
+                marker_count=0,
+                charuco_count=0,
+                dictionary_name=dictionary_name,
+                board_name=board_candidate.name,
+                preprocess_name=preprocess_name,
+            )
+
+        if hasattr(cv2.aruco, "refineDetectedMarkers"):
+            try:
+                marker_corners, marker_ids, rejected, _ = cv2.aruco.refineDetectedMarkers(
+                    gray_variant,
+                    board_candidate.board,
+                    marker_corners,
+                    marker_ids,
+                    rejected,
+                    cameraMatrix=self.camera_matrix,
+                    distCoeffs=self.dist_coeffs,
+                )
+                marker_count = 0 if marker_ids is None else len(marker_ids)
+            except cv2.error:
+                pass
+
+        charuco_corners = None
+        charuco_ids = None
+        charuco_count = 0
+        pose_found = False
+        pose_source = ""
+        rvec = None
+        tvec = None
+
+        if marker_ids is not None and len(marker_ids) > 0:
+            _, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
+                marker_corners,
+                marker_ids,
+                gray_variant,
+                board_candidate.board,
+                self.camera_matrix,
+                self.dist_coeffs,
+            )
+            charuco_count = 0 if charuco_ids is None else len(charuco_ids)
+
+            if charuco_ids is not None and len(charuco_ids) >= 4:
+                ok, charuco_rvec, charuco_tvec = cv2.aruco.estimatePoseCharucoBoard(
+                    charuco_corners,
+                    charuco_ids,
+                    board_candidate.board,
+                    self.camera_matrix,
+                    self.dist_coeffs,
+                    None,
+                    None,
+                )
+                pose_found = bool(ok)
+                if pose_found:
+                    rvec = charuco_rvec.reshape(3, 1)
+                    tvec = charuco_tvec.reshape(3, 1)
+                    pose_source = "charuco"
+
+            if not pose_found and marker_ids is not None and len(marker_ids) >= 4:
+                retval, board_rvec, board_tvec = cv2.aruco.estimatePoseBoard(
+                    marker_corners,
+                    marker_ids,
+                    board_candidate.board,
+                    self.camera_matrix,
+                    self.dist_coeffs,
+                    None,
+                    None,
+                )
+                if retval > 0:
+                    pose_found = True
+                    rvec = board_rvec.reshape(3, 1)
+                    tvec = board_tvec.reshape(3, 1)
+                    pose_source = "board"
+
+        return DetectionResult(
+            found=pose_found,
+            image=np.zeros((1, 1, 3), dtype=np.uint8),
+            image_stamp=image_stamp,
+            image_frame=image_frame,
+            rvec=rvec,
+            tvec=tvec,
+            marker_count=marker_count,
+            charuco_count=charuco_count,
+            pose_source=pose_source,
+            dictionary_name=dictionary_name,
+            board_name=board_candidate.name,
+            preprocess_name=preprocess_name,
+            marker_corners=marker_corners,
+            marker_ids=marker_ids,
+            charuco_corners=charuco_corners,
+            charuco_ids=charuco_ids,
+        )
+
+    def _detect_board(self, display: np.ndarray, image_stamp: Time, image_frame: str) -> DetectionResult:
+        gray = cv2.cvtColor(display, cv2.COLOR_BGR2GRAY)
+        best_detection = DetectionResult(found=False, image=display, image_stamp=image_stamp, image_frame=image_frame)
+
+        for dictionary_name in self._candidate_dictionary_names():
+            dictionary = self.dictionaries[dictionary_name]
+            for preprocess_name, gray_variant in self._gray_variants(gray):
+                for board_candidate in self._candidate_boards(dictionary_name):
+                    detection = self._try_board_candidate(
+                        gray_variant,
+                        image_stamp,
+                        image_frame,
+                        dictionary_name,
+                        dictionary,
+                        board_candidate,
+                        preprocess_name,
+                    )
+                    if self._candidate_score(detection) > self._candidate_score(best_detection):
+                        best_detection = detection
+                    if detection.found and detection.charuco_count >= 6:
+                        return best_detection
+
+        best_detection.image = display
+        return best_detection
+
+    def _detection_hint_text(self, detection: DetectionResult) -> str:
+        if detection.marker_count <= 0:
+            return f"dict={self.requested_dictionary_name} board={self.board_params['squares_x']}x{self.board_params['squares_y']}"
+        return (
+            f"dict={detection.dictionary_name} board={detection.board_name} "
+            f"prep={detection.preprocess_name}"
+        )
 
     def _serializable_samples(self) -> dict:
         serialized = {"samples": []}
@@ -554,6 +814,9 @@ class EyeInHandCalibrationNode(Node):
                     "pose_source": sample["pose_source"],
                     "marker_count": sample["marker_count"],
                     "charuco_count": sample["charuco_count"],
+                    "dictionary_name": sample["dictionary_name"],
+                    "board_name": sample["board_name"],
+                    "preprocess_name": sample["preprocess_name"],
                     "b_T_g": sample["b_T_g"].tolist(),
                     "c_T_t": sample["c_T_t"].tolist(),
                 }
