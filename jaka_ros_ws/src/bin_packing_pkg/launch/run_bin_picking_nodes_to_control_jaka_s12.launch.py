@@ -28,6 +28,7 @@ def generate_launch_description():
     min_grasp_tcp_above_table = LaunchConfiguration("min_grasp_tcp_above_table")
     enable_collision_monitor = LaunchConfiguration("enable_collision_monitor")
     collision_check_period = LaunchConfiguration("collision_check_period")
+    use_sim_time = LaunchConfiguration("use_sim_time")
 
     # -------------------------
     # MoveIt configuration
@@ -55,7 +56,7 @@ def generate_launch_description():
             moveit_config.robot_description_kinematics,
             moveit_config.joint_limits,
             {
-                "use_sim_time": True,
+                "use_sim_time": use_sim_time,
                 "flange_link": "grasp_tcp",
                 "tool_center_offset": 0.019,
                 "grasp_final_offset": 0.0,
@@ -93,7 +94,7 @@ def generate_launch_description():
         parameters=[
             moveit_config.robot_description,
             {
-                "use_sim_time": True,
+                "use_sim_time": use_sim_time,
                 "planning_scene_topic": "/monitored_planning_scene",
                 "check_period_sec": collision_check_period,
             },
@@ -103,6 +104,7 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument("use_sim_time", default_value="false"),
             DeclareLaunchArgument("arm_velocity_scaling", default_value="0.30"),
             DeclareLaunchArgument("arm_acceleration_scaling", default_value="0.30"),
             DeclareLaunchArgument("grasp_descent_step", default_value="0.002"),

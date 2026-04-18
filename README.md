@@ -166,6 +166,18 @@ conda activate yolov12_py10
 python3 yolo_ros_infer_sim_v11.py
 ```
 
+### Eye-in-hand calibration for a real wrist camera
+
+If your RealSense is mounted on the robot wrist `Link_06` or `Link_6`, use the hand-eye workflow documented here:
+
+- [jaka_hardware_bringup/README.md](/home/ubuntu/6d_pose_estimation/6d_pose_estimation_using_AI_ROS2/jaka_ros_ws/src/jaka_hardware_bringup/README.md:1)
+
+The interactive calibration tool is:
+
+```bash
+ros2 run jaka_hardware_bringup eye_in_hand_charuco_calibration --help
+```
+
 
 
 

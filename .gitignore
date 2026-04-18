@@ -19,3 +19,5 @@ jaka_ros_ws/src/hexnut_6d_planner/hexnut_6d_planner/__pycache__
 yolov12_seg_infer/__pycache__
 
 tools/__pycache__
+calibration_runs/
+jaka_ros_ws/calibration_runs/

@@ -1,0 +1,18 @@
+# Update these values to match your physical board before calibration.
+# The target in your photo looks like a ChArUco-style board.
+#
+# squares_x / squares_y:
+#   Number of chessboard squares, not the number of ArUco markers.
+# square_length_m:
+#   Full black/white square edge length in meters.
+# marker_length_m:
+#   Inner ArUco marker edge length in meters.
+# aruco_dictionary:
+#   Common choice for boards like yours is DICT_4X4_50, but verify it.
+
+board:
+  squares_x: 4
+  squares_y: 6
+  square_length_m: 0.015
+  marker_length_m: 0.005
+  aruco_dictionary: DICT_4X4_50

@@ -15,6 +15,7 @@ def generate_launch_description():
         DeclareLaunchArgument("use_move_group", default_value="true"),
         DeclareLaunchArgument("use_driver", default_value="true"),
         DeclareLaunchArgument("use_bin_picking", default_value="false"),
+        DeclareLaunchArgument("joint_states_topic", default_value="/jaka_driver/joint_position"),
         DeclareLaunchArgument("robot_ip", default_value="192.168.1.100"),
 
         IncludeLaunchDescription(
@@ -28,6 +29,7 @@ def generate_launch_description():
                 "use_move_group": LaunchConfiguration("use_move_group"),
                 "use_rviz": LaunchConfiguration("use_rviz"),
                 "use_bin_picking": LaunchConfiguration("use_bin_picking"),
+                "joint_states_topic": LaunchConfiguration("joint_states_topic"),
                 "robot_ip": LaunchConfiguration("robot_ip"),
             }.items(),
             condition=IfCondition(LaunchConfiguration("launch_robot")),

@@ -1,0 +1,670 @@
+#!/usr/bin/env python3
+
+import argparse
+import math
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+import cv2
+import numpy as np
+import rclpy
+import yaml
+from cv_bridge import CvBridge
+from rclpy.duration import Duration
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from rclpy.time import Time
+from sensor_msgs.msg import CameraInfo, Image
+from tf2_ros import Buffer, TransformException, TransformListener
+
+
+METHODS = {
+    "TSAI": cv2.CALIB_HAND_EYE_TSAI,
+    "PARK": cv2.CALIB_HAND_EYE_PARK,
+    "HORAUD": cv2.CALIB_HAND_EYE_HORAUD,
+    "ANDREFF": cv2.CALIB_HAND_EYE_ANDREFF,
+    "DANIILIDIS": cv2.CALIB_HAND_EYE_DANIILIDIS,
+}
+
+
+@dataclass
+class DetectionResult:
+    found: bool
+    image: np.ndarray
+    image_stamp: Time
+    image_frame: str
+    rvec: Optional[np.ndarray] = None
+    tvec: Optional[np.ndarray] = None
+    marker_count: int = 0
+    charuco_count: int = 0
+    pose_source: str = ""
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Interactive eye-in-hand ChArUco calibration")
+    parser.add_argument("--image-topic", default="/camera/camera/color/image_raw")
+    parser.add_argument("--camera-info-topic", default="/camera/camera/color/camera_info")
+    parser.add_argument("--base-frame", default="base_link")
+    parser.add_argument("--effector-frame", default="Link_06")
+    parser.add_argument("--mount-child-frame", default="camera_link")
+    parser.add_argument(
+        "--board-config",
+        default="",
+        help="YAML file with keys board.squares_x, board.squares_y, board.square_length_m, "
+        "board.marker_length_m, board.aruco_dictionary",
+    )
+    parser.add_argument("--squares-x", type=int, default=4)
+    parser.add_argument("--squares-y", type=int, default=6)
+    parser.add_argument("--square-length-m", type=float, default=0.0)
+    parser.add_argument("--marker-length-m", type=float, default=0.0)
+    parser.add_argument("--aruco-dictionary", default="DICT_4X4_50")
+    parser.add_argument("--min-samples", type=int, default=12)
+    parser.add_argument("--output-dir", default="calibration_runs")
+    parser.add_argument("--save-preview-images", action="store_true")
+    return parser.parse_args()
+
+
+def load_board_params(args: argparse.Namespace) -> dict:
+    params = {
+        "squares_x": args.squares_x,
+        "squares_y": args.squares_y,
+        "square_length_m": args.square_length_m,
+        "marker_length_m": args.marker_length_m,
+        "aruco_dictionary": args.aruco_dictionary,
+    }
+
+    if args.board_config:
+        config_path = Path(args.board_config).expanduser().resolve()
+        if not config_path.exists():
+            raise FileNotFoundError(f"Board config file not found: {config_path}")
+        with config_path.open("r", encoding="utf-8") as handle:
+            config_data = yaml.safe_load(handle) or {}
+        config_board = config_data.get("board", config_data)
+        for key in params:
+            if key in config_board and config_board[key] not in (None, ""):
+                params[key] = config_board[key]
+
+    if params["square_length_m"] <= 0.0 or params["marker_length_m"] <= 0.0:
+        raise ValueError(
+            "Board square_length_m and marker_length_m must be > 0. "
+            "Measure the board and update the config or pass them on the command line."
+        )
+    if params["marker_length_m"] >= params["square_length_m"]:
+        raise ValueError("marker_length_m must be smaller than square_length_m.")
+
+    return params
+
+
+def matrix_from_transform(transform_msg) -> np.ndarray:
+    tx = transform_msg.transform.translation.x
+    ty = transform_msg.transform.translation.y
+    tz = transform_msg.transform.translation.z
+    qx = transform_msg.transform.rotation.x
+    qy = transform_msg.transform.rotation.y
+    qz = transform_msg.transform.rotation.z
+    qw = transform_msg.transform.rotation.w
+
+    rot = quaternion_to_matrix(np.array([qx, qy, qz, qw], dtype=np.float64))
+    mat = np.eye(4, dtype=np.float64)
+    mat[:3, :3] = rot
+    mat[:3, 3] = np.array([tx, ty, tz], dtype=np.float64)
+    return mat
+
+
+def quaternion_to_matrix(q: np.ndarray) -> np.ndarray:
+    q = q.astype(np.float64)
+    norm = np.linalg.norm(q)
+    if norm == 0.0:
+        return np.eye(3, dtype=np.float64)
+    q = q / norm
+    x, y, z, w = q
+    return np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
+
+
+def matrix_to_quaternion(rot: np.ndarray) -> np.ndarray:
+    trace = float(np.trace(rot))
+    if trace > 0.0:
+        s = math.sqrt(trace + 1.0) * 2.0
+        qw = 0.25 * s
+        qx = (rot[2, 1] - rot[1, 2]) / s
+        qy = (rot[0, 2] - rot[2, 0]) / s
+        qz = (rot[1, 0] - rot[0, 1]) / s
+    else:
+        if rot[0, 0] > rot[1, 1] and rot[0, 0] > rot[2, 2]:
+            s = math.sqrt(1.0 + rot[0, 0] - rot[1, 1] - rot[2, 2]) * 2.0
+            qw = (rot[2, 1] - rot[1, 2]) / s
+            qx = 0.25 * s
+            qy = (rot[0, 1] + rot[1, 0]) / s
+            qz = (rot[0, 2] + rot[2, 0]) / s
+        elif rot[1, 1] > rot[2, 2]:
+            s = math.sqrt(1.0 + rot[1, 1] - rot[0, 0] - rot[2, 2]) * 2.0
+            qw = (rot[0, 2] - rot[2, 0]) / s
+            qx = (rot[0, 1] + rot[1, 0]) / s
+            qy = 0.25 * s
+            qz = (rot[1, 2] + rot[2, 1]) / s
+        else:
+            s = math.sqrt(1.0 + rot[2, 2] - rot[0, 0] - rot[1, 1]) * 2.0
+            qw = (rot[1, 0] - rot[0, 1]) / s
+            qx = (rot[0, 2] + rot[2, 0]) / s
+            qy = (rot[1, 2] + rot[2, 1]) / s
+            qz = 0.25 * s
+    quat = np.array([qx, qy, qz, qw], dtype=np.float64)
+    return quat / np.linalg.norm(quat)
+
+
+def rotation_matrix_to_rpy(rot: np.ndarray) -> np.ndarray:
+    sy = math.sqrt(rot[0, 0] * rot[0, 0] + rot[1, 0] * rot[1, 0])
+    singular = sy < 1.0e-6
+    if not singular:
+        roll = math.atan2(rot[2, 1], rot[2, 2])
+        pitch = math.atan2(-rot[2, 0], sy)
+        yaw = math.atan2(rot[1, 0], rot[0, 0])
+    else:
+        roll = math.atan2(-rot[1, 2], rot[1, 1])
+        pitch = math.atan2(-rot[2, 0], sy)
+        yaw = 0.0
+    return np.array([roll, pitch, yaw], dtype=np.float64)
+
+
+def invert_transform(mat: np.ndarray) -> np.ndarray:
+    rot = mat[:3, :3]
+    trans = mat[:3, 3]
+    inv = np.eye(4, dtype=np.float64)
+    inv[:3, :3] = rot.T
+    inv[:3, 3] = -rot.T @ trans
+    return inv
+
+
+def transform_to_dict(mat: np.ndarray) -> dict:
+    rot = mat[:3, :3]
+    trans = mat[:3, 3]
+    quat = matrix_to_quaternion(rot)
+    rpy = rotation_matrix_to_rpy(rot)
+    return {
+        "x": float(trans[0]),
+        "y": float(trans[1]),
+        "z": float(trans[2]),
+        "roll": float(rpy[0]),
+        "pitch": float(rpy[1]),
+        "yaw": float(rpy[2]),
+        "qx": float(quat[0]),
+        "qy": float(quat[1]),
+        "qz": float(quat[2]),
+        "qw": float(quat[3]),
+    }
+
+
+def transform_from_rt(rot: np.ndarray, trans: np.ndarray) -> np.ndarray:
+    mat = np.eye(4, dtype=np.float64)
+    mat[:3, :3] = rot
+    mat[:3, 3] = trans.reshape(3)
+    return mat
+
+
+def rotation_angle_deg(rot: np.ndarray) -> float:
+    clipped = max(-1.0, min(1.0, (np.trace(rot) - 1.0) * 0.5))
+    return math.degrees(math.acos(clipped))
+
+
+class EyeInHandCalibrationNode(Node):
+    def __init__(self, args: argparse.Namespace, board_params: dict, run_dir: Path) -> None:
+        super().__init__("eye_in_hand_charuco_calibration")
+        self.args = args
+        self.board_params = board_params
+        self.run_dir = run_dir
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        self.samples = []
+        self.bridge = CvBridge()
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+
+        self.image_topic = args.image_topic
+        self.camera_info_topic = args.camera_info_topic
+        self.base_frame = args.base_frame
+        self.effector_frame = args.effector_frame
+        self.mount_child_frame = args.mount_child_frame
+
+        self.latest_image = None
+        self.latest_image_stamp = None
+        self.latest_image_frame = ""
+        self.camera_matrix = None
+        self.dist_coeffs = None
+        self.camera_info_frame = ""
+        self.last_detection: Optional[DetectionResult] = None
+        self.preview_image = np.zeros((720, 960, 3), dtype=np.uint8)
+        self.last_status = "Waiting for image and camera info..."
+
+        dictionary_id = getattr(cv2.aruco, board_params["aruco_dictionary"], None)
+        if dictionary_id is None:
+            raise ValueError(f"Unknown ArUco dictionary: {board_params['aruco_dictionary']}")
+        self.dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
+        self.detector_params = cv2.aruco.DetectorParameters_create()
+        self.board = cv2.aruco.CharucoBoard_create(
+            int(board_params["squares_x"]),
+            int(board_params["squares_y"]),
+            float(board_params["square_length_m"]),
+            float(board_params["marker_length_m"]),
+            self.dictionary,
+        )
+
+        self.create_subscription(Image, self.image_topic, self.on_image, qos_profile_sensor_data)
+        self.create_subscription(CameraInfo, self.camera_info_topic, self.on_camera_info, qos_profile_sensor_data)
+
+        self.get_logger().info(
+            "Eye-in-hand calibration started. "
+            f"image={self.image_topic}, camera_info={self.camera_info_topic}, "
+            f"base={self.base_frame}, effector={self.effector_frame}, mount_child={self.mount_child_frame}"
+        )
+        self.get_logger().info(
+            "Board config: "
+            f"{board_params['squares_x']}x{board_params['squares_y']}, "
+            f"square={board_params['square_length_m']:.6f} m, "
+            f"marker={board_params['marker_length_m']:.6f} m, "
+            f"dict={board_params['aruco_dictionary']}"
+        )
+
+    def on_image(self, msg: Image) -> None:
+        self.latest_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+        self.latest_image_stamp = Time.from_msg(msg.header.stamp)
+        self.latest_image_frame = msg.header.frame_id
+
+    def on_camera_info(self, msg: CameraInfo) -> None:
+        self.camera_matrix = np.array(msg.k, dtype=np.float64).reshape(3, 3)
+        self.dist_coeffs = np.array(msg.d, dtype=np.float64).reshape(-1, 1)
+        self.camera_info_frame = msg.header.frame_id
+
+    def process_frame(self) -> None:
+        if self.latest_image is None:
+            self.preview_image = np.zeros((720, 960, 3), dtype=np.uint8)
+            cv2.putText(
+                self.preview_image,
+                "Waiting for image topic...",
+                (40, 80),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            return
+
+        display = self.latest_image.copy()
+        image_stamp = self.latest_image_stamp if self.latest_image_stamp is not None else self.get_clock().now()
+        image_frame = self.camera_info_frame or self.latest_image_frame or self.mount_child_frame
+        detection = DetectionResult(
+            found=False,
+            image=display,
+            image_stamp=image_stamp,
+            image_frame=image_frame,
+        )
+
+        if self.camera_matrix is not None and self.dist_coeffs is not None:
+            gray = cv2.cvtColor(display, cv2.COLOR_BGR2GRAY)
+            marker_corners, marker_ids, _ = cv2.aruco.detectMarkers(
+                gray, self.dictionary, parameters=self.detector_params
+            )
+            detection.marker_count = 0 if marker_ids is None else len(marker_ids)
+            if marker_ids is not None and len(marker_ids) > 0:
+                cv2.aruco.drawDetectedMarkers(display, marker_corners, marker_ids)
+                _, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
+                    marker_corners, marker_ids, gray, self.board, self.camera_matrix, self.dist_coeffs
+                )
+                detection.charuco_count = 0 if charuco_ids is None else len(charuco_ids)
+
+                pose_found = False
+                if charuco_ids is not None and len(charuco_ids) >= 4:
+                    ok, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(
+                        charuco_corners,
+                        charuco_ids,
+                        self.board,
+                        self.camera_matrix,
+                        self.dist_coeffs,
+                        None,
+                        None,
+                    )
+                    pose_found = bool(ok)
+                    if pose_found:
+                        detection.found = True
+                        detection.rvec = rvec.reshape(3, 1)
+                        detection.tvec = tvec.reshape(3, 1)
+                        detection.pose_source = "charuco"
+                        cv2.aruco.drawDetectedCornersCharuco(display, charuco_corners, charuco_ids)
+                if not pose_found and marker_ids is not None and len(marker_ids) >= 4:
+                    retval, rvec, tvec = cv2.aruco.estimatePoseBoard(
+                        marker_corners,
+                        marker_ids,
+                        self.board,
+                        self.camera_matrix,
+                        self.dist_coeffs,
+                        None,
+                        None,
+                    )
+                    if retval > 0:
+                        detection.found = True
+                        detection.rvec = rvec.reshape(3, 1)
+                        detection.tvec = tvec.reshape(3, 1)
+                        detection.pose_source = "board"
+
+                if detection.found:
+                    cv2.drawFrameAxes(
+                        display,
+                        self.camera_matrix,
+                        self.dist_coeffs,
+                        detection.rvec,
+                        detection.tvec,
+                        float(self.board_params["square_length_m"]) * 1.5,
+                        2,
+                    )
+                    self.last_status = (
+                        f"Board detected via {detection.pose_source}. markers={detection.marker_count} "
+                        f"charuco={detection.charuco_count}"
+                    )
+                else:
+                    self.last_status = (
+                        f"Markers found={detection.marker_count}, but board pose failed. "
+                        "Move closer or reduce glare."
+                    )
+            else:
+                self.last_status = "Board not detected."
+        else:
+            self.last_status = "Waiting for camera_info..."
+
+        overlay_lines = [
+            self.last_status,
+            f"samples={len(self.samples)} min_required={self.args.min_samples}",
+            f"image_frame={image_frame}",
+            f"Press c=capture, s=solve, r=reset, q=quit",
+        ]
+        for index, text in enumerate(overlay_lines):
+            cv2.putText(
+                display,
+                text,
+                (20, 30 + 28 * index),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0) if index == 0 else (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+        self.preview_image = display
+        self.last_detection = detection
+
+    def capture_sample(self) -> None:
+        if self.last_detection is None or not self.last_detection.found:
+            self.get_logger().warn("Cannot capture sample: no valid board pose in the current frame.")
+            return
+
+        try:
+            gripper_tf = self._lookup_transform(
+                self.base_frame,
+                self.effector_frame,
+                self.last_detection.image_stamp,
+            )
+        except TransformException as exc:
+            self.get_logger().warn(f"Cannot capture sample: TF lookup failed for robot pose: {exc}")
+            return
+
+        rot_target_to_image, _ = cv2.Rodrigues(self.last_detection.rvec)
+        c_t_t = transform_from_rt(rot_target_to_image, self.last_detection.tvec)
+        b_t_g = matrix_from_transform(gripper_tf)
+
+        sample_index = len(self.samples) + 1
+        sample = {
+            "index": sample_index,
+            "stamp_sec": float(self.last_detection.image_stamp.nanoseconds) / 1.0e9,
+            "image_frame": self.last_detection.image_frame,
+            "pose_source": self.last_detection.pose_source,
+            "marker_count": int(self.last_detection.marker_count),
+            "charuco_count": int(self.last_detection.charuco_count),
+            "b_T_g": b_t_g,
+            "c_T_t": c_t_t,
+        }
+        self.samples.append(sample)
+
+        if self.args.save_preview_images:
+            preview_path = self.run_dir / f"sample_{sample_index:03d}.png"
+            cv2.imwrite(str(preview_path), self.preview_image)
+
+        self.get_logger().info(
+            f"Captured sample {sample_index}: pose_source={sample['pose_source']} "
+            f"image_frame={sample['image_frame']}"
+        )
+
+    def solve(self) -> None:
+        if len(self.samples) < self.args.min_samples:
+            self.get_logger().warn(
+                f"Need at least {self.args.min_samples} samples before solving. "
+                f"Current samples: {len(self.samples)}"
+            )
+            return
+
+        image_frame = self.samples[0]["image_frame"]
+        if any(sample["image_frame"] != image_frame for sample in self.samples):
+            self.get_logger().warn("Captured samples use multiple image frames. Restart with a single camera stream.")
+            return
+
+        mount_t_image = np.eye(4, dtype=np.float64)
+        if self.mount_child_frame != image_frame:
+            try:
+                mount_tf = self._lookup_transform(self.mount_child_frame, image_frame, Time())
+                mount_t_image = matrix_from_transform(mount_tf)
+            except TransformException as exc:
+                self.get_logger().warn(
+                    "Could not look up the internal camera transform "
+                    f"{self.mount_child_frame} -> {image_frame}. "
+                    "The result will only be available for the image frame. "
+                    f"Details: {exc}"
+                )
+                mount_t_image = None
+
+        r_gripper2base = [sample["b_T_g"][:3, :3] for sample in self.samples]
+        t_gripper2base = [sample["b_T_g"][:3, 3].reshape(3, 1) for sample in self.samples]
+        r_target2cam = [sample["c_T_t"][:3, :3] for sample in self.samples]
+        t_target2cam = [sample["c_T_t"][:3, 3].reshape(3, 1) for sample in self.samples]
+
+        method_results = {}
+        for name, method in METHODS.items():
+            try:
+                r_cam2gripper, t_cam2gripper = cv2.calibrateHandEye(
+                    r_gripper2base,
+                    t_gripper2base,
+                    r_target2cam,
+                    t_target2cam,
+                    method=method,
+                )
+            except cv2.error as exc:
+                self.get_logger().warn(f"Method {name} failed: {exc}")
+                continue
+
+            g_t_image = transform_from_rt(np.asarray(r_cam2gripper), np.asarray(t_cam2gripper))
+            eval_metrics = self._evaluate_solution(g_t_image)
+            result = {
+                "g_T_image_frame": g_t_image,
+                "g_T_mount_child": None if mount_t_image is None else g_t_image @ invert_transform(mount_t_image),
+                "metrics": eval_metrics,
+            }
+            method_results[name] = result
+
+        if not method_results:
+            self.get_logger().error("No hand-eye solution could be computed from the captured samples.")
+            return
+
+        best_method = min(
+            method_results.keys(),
+            key=lambda key: method_results[key]["metrics"]["score"],
+        )
+        best_result = method_results[best_method]
+
+        summary = {
+            "metadata": {
+                "created_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "base_frame": self.base_frame,
+                "effector_frame": self.effector_frame,
+                "mount_child_frame": self.mount_child_frame,
+                "image_frame": image_frame,
+                "image_topic": self.image_topic,
+                "camera_info_topic": self.camera_info_topic,
+                "sample_count": len(self.samples),
+                "board": self.board_params,
+            },
+            "best_method": best_method,
+            "methods": {},
+        }
+
+        for name, result in method_results.items():
+            method_entry = {
+                "metrics": result["metrics"],
+                "effector_to_image_frame": transform_to_dict(result["g_T_image_frame"]),
+            }
+            if result["g_T_mount_child"] is not None:
+                method_entry["effector_to_mount_child_frame"] = transform_to_dict(result["g_T_mount_child"])
+            summary["methods"][name] = method_entry
+
+        summary_path = self.run_dir / "eye_in_hand_result.yaml"
+        samples_path = self.run_dir / "captured_samples.yaml"
+        with summary_path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(summary, handle, sort_keys=False)
+        with samples_path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(self._serializable_samples(), handle, sort_keys=False)
+
+        self._print_result(best_method, best_result, image_frame, summary_path)
+
+    def reset(self) -> None:
+        self.samples.clear()
+        self.get_logger().info("Cleared captured samples.")
+
+    def _serializable_samples(self) -> dict:
+        serialized = {"samples": []}
+        for sample in self.samples:
+            serialized["samples"].append(
+                {
+                    "index": sample["index"],
+                    "stamp_sec": sample["stamp_sec"],
+                    "image_frame": sample["image_frame"],
+                    "pose_source": sample["pose_source"],
+                    "marker_count": sample["marker_count"],
+                    "charuco_count": sample["charuco_count"],
+                    "b_T_g": sample["b_T_g"].tolist(),
+                    "c_T_t": sample["c_T_t"].tolist(),
+                }
+            )
+        return serialized
+
+    def _print_result(self, best_method: str, best_result: dict, image_frame: str, summary_path: Path) -> None:
+        g_t_image = transform_to_dict(best_result["g_T_image_frame"])
+        self.get_logger().info(f"Best method: {best_method}")
+        self.get_logger().info(
+            "Effector -> image frame result "
+            f"({self.effector_frame} -> {image_frame}): "
+            f"x={g_t_image['x']:.6f} y={g_t_image['y']:.6f} z={g_t_image['z']:.6f} "
+            f"roll={g_t_image['roll']:.6f} pitch={g_t_image['pitch']:.6f} yaw={g_t_image['yaw']:.6f}"
+        )
+
+        if best_result["g_T_mount_child"] is not None:
+            g_t_mount = transform_to_dict(best_result["g_T_mount_child"])
+            self.get_logger().info(
+                f"Use this static TF for {self.effector_frame} -> {self.mount_child_frame}: "
+                f"x={g_t_mount['x']:.6f} y={g_t_mount['y']:.6f} z={g_t_mount['z']:.6f} "
+                f"roll={g_t_mount['roll']:.6f} pitch={g_t_mount['pitch']:.6f} yaw={g_t_mount['yaw']:.6f}"
+            )
+            self.get_logger().info(
+                "Launch command: "
+                "ros2 launch jaka_hardware_bringup camera_d435_eye_in_hand.launch.py "
+                f"parent_frame:={self.effector_frame} "
+                f"camera_frame:={self.mount_child_frame} "
+                f"camera_x:={g_t_mount['x']:.6f} camera_y:={g_t_mount['y']:.6f} "
+                f"camera_z:={g_t_mount['z']:.6f} camera_roll:={g_t_mount['roll']:.6f} "
+                f"camera_pitch:={g_t_mount['pitch']:.6f} camera_yaw:={g_t_mount['yaw']:.6f}"
+            )
+        else:
+            self.get_logger().warn(
+                f"Could not derive {self.mount_child_frame} mount TF because the internal "
+                f"{self.mount_child_frame} -> {image_frame} transform was unavailable."
+            )
+
+        self.get_logger().info(f"Saved calibration summary to {summary_path}")
+
+    def _evaluate_solution(self, g_t_image: np.ndarray) -> dict:
+        base_target_poses = [sample["b_T_g"] @ g_t_image @ sample["c_T_t"] for sample in self.samples]
+        reference = base_target_poses[0]
+        ref_translation = reference[:3, 3]
+        ref_rotation = reference[:3, :3]
+
+        translation_errors = []
+        rotation_errors = []
+        for pose in base_target_poses:
+            translation_errors.append(float(np.linalg.norm(pose[:3, 3] - ref_translation)))
+            rotation_errors.append(rotation_angle_deg(ref_rotation.T @ pose[:3, :3]))
+
+        mean_translation = float(np.mean(translation_errors))
+        max_translation = float(np.max(translation_errors))
+        mean_rotation = float(np.mean(rotation_errors))
+        max_rotation = float(np.max(rotation_errors))
+        return {
+            "mean_translation_error_m": mean_translation,
+            "max_translation_error_m": max_translation,
+            "mean_rotation_error_deg": mean_rotation,
+            "max_rotation_error_deg": max_rotation,
+            "score": mean_translation * 1000.0 + mean_rotation,
+        }
+
+    def _lookup_transform(self, target_frame: str, source_frame: str, stamp: Time):
+        try:
+            return self.tf_buffer.lookup_transform(
+                target_frame,
+                source_frame,
+                stamp,
+                timeout=Duration(seconds=0.25),
+            )
+        except TransformException:
+            return self.tf_buffer.lookup_transform(
+                target_frame,
+                source_frame,
+                Time(),
+                timeout=Duration(seconds=0.25),
+            )
+
+
+def main() -> None:
+    args = parse_args()
+    board_params = load_board_params(args)
+    run_dir = Path(args.output_dir).expanduser().resolve() / (
+        "eye_in_hand_" + datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    )
+
+    rclpy.init()
+    node = EyeInHandCalibrationNode(args, board_params, run_dir)
+    cv2.namedWindow("Eye-in-hand calibration", cv2.WINDOW_NORMAL)
+
+    try:
+        while rclpy.ok():
+            rclpy.spin_once(node, timeout_sec=0.05)
+            node.process_frame()
+            cv2.imshow("Eye-in-hand calibration", node.preview_image)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("c"):
+                node.capture_sample()
+            elif key == ord("s"):
+                node.solve()
+            elif key == ord("r"):
+                node.reset()
+            elif key == ord("q"):
+                break
+    finally:
+        cv2.destroyAllWindows()
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
