@@ -2,6 +2,15 @@
 
 Bring-up package for running JAKA S12 + custom gripper + RealSense on real hardware.
 
+For the recommended calibration entry points, use the dedicated wrapper packages instead of driving calibration directly from this package:
+
+- eye-in-hand unified launch:
+  [calibration.launch.py](/home/ubuntu/6d_pose_estimation/6d_pose_estimation_using_AI_ROS2/jaka_ros_ws/src/jaka_eye_in_hand_calibration/launch/calibration.launch.py)
+- eye-to-hand unified launch:
+  [calibration.launch.py](/home/ubuntu/6d_pose_estimation/6d_pose_estimation_using_AI_ROS2/jaka_ros_ws/src/jaka_eye_to_hand_calibration/launch/calibration.launch.py)
+
+This package still contains the lower-level robot, camera, and custom ChArUco calibration tooling that those wrappers build on.
+
 ## Folder structure
 
 - `launch/robot_hw.launch.py`: S12 driver + MoveIt + optional RViz + optional S12 bin picking launch
