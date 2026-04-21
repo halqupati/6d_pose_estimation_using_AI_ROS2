@@ -23,8 +23,6 @@ calibration_runs/
 jaka_ros_ws/calibration_runs/
 
 
-jaka_ros_ws/src/jaka_eye_in_hand_calibration/README.md
-jaka_ros_ws/src/jaka_eye_to_hand_calibration/README.md
 jaka_ros_ws/src/jaka_eye_in_hand_calibration/launch/__pycache__/easy_handeye_calibrate.launch.cpython-310.pyc
 .gitignore
 jaka_ros_ws/src/jaka_eye_in_hand_calibration/launch/__pycache__/easy_handeye_publish.launch.cpython-310.pyc
