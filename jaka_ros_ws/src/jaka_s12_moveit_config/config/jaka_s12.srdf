@@ -13,7 +13,6 @@
 
     <!-- ── Planning groups ─────────────────────────────────────────── -->
     <group name="jaka_s12">
-        <joint name="fixed"/>
         <joint name="joint_1"/>
         <joint name="joint_2"/>
         <joint name="joint_3"/>
@@ -93,5 +92,27 @@
     <disable_collisions link1="Link_06" link2="gripper_body_link"              reason="Never"/>
     <disable_collisions link1="Link_06" link2="gripper_jaw_left_link"          reason="Never"/>
     <disable_collisions link1="Link_06" link2="gripper_jaw_right_link"         reason="Never"/>
+
+    <!-- Cameras are mounted hardware, not planning obstacles -->
+    <!-- Fixed workcell camera -->
+    <disable_collisions link1="base_link"             link2="camera_link"                 reason="Never"/>
+    <disable_collisions link1="Link_01"               link2="camera_link"                 reason="Never"/>
+    <disable_collisions link1="Link_02"               link2="camera_link"                 reason="Never"/>
+    <disable_collisions link1="Link_03"               link2="camera_link"                 reason="Never"/>
+    <disable_collisions link1="Link_04"               link2="camera_link"                 reason="Never"/>
+    <disable_collisions link1="Link_05"               link2="camera_link"                 reason="Never"/>
+    <disable_collisions link1="Link_06"               link2="camera_link"                 reason="Never"/>
+    <disable_collisions link1="gripper_base_link"     link2="camera_link"                 reason="Never"/>
+    <disable_collisions link1="gripper_body_link"     link2="camera_link"                 reason="Never"/>
+    <disable_collisions link1="gripper_jaw_left_link" link2="camera_link"                 reason="Never"/>
+    <disable_collisions link1="gripper_jaw_right_link" link2="camera_link"                reason="Never"/>
+
+    <!-- Wrist-mounted eye-in-hand camera -->
+    <disable_collisions link1="Link_05"               link2="mounted_camera_link"         reason="Never"/>
+    <disable_collisions link1="Link_06"               link2="mounted_camera_link"         reason="Never"/>
+    <disable_collisions link1="gripper_base_link"     link2="mounted_camera_link"         reason="Never"/>
+    <disable_collisions link1="gripper_body_link"     link2="mounted_camera_link"         reason="Never"/>
+    <disable_collisions link1="gripper_jaw_left_link" link2="mounted_camera_link"         reason="Never"/>
+    <disable_collisions link1="gripper_jaw_right_link" link2="mounted_camera_link"        reason="Never"/>
 
 </robot>

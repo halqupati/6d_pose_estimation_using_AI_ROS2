@@ -15,6 +15,11 @@ install(DIRECTORY
   PATTERN "*.pyc" EXCLUDE
 )
 
+install(PROGRAMS
+  scripts/follow_joint_trajectory_proxy.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 install(FILES
   README.md
   DESTINATION share/${PROJECT_NAME}

@@ -15,8 +15,34 @@
   </xacro:custom_gripper>
   
   <xacro:arg name="use_nominal_extrinsics" default="false"/>
+  <xacro:arg name="use_handeye_sim_target" default="false"/>
   <xacro:include filename="$(find jaka_description)/urdf/sensors/_d455.urdf.xacro" />
   <xacro:include filename="$(find jaka_description)/urdf/sensors/_d435.urdf.xacro" />
+
+  <xacro:if value="$(arg use_handeye_sim_target)">
+    <!-- Simulation-only ChArUco target for eye-to-hand MoveIt calibration. -->
+    <joint name="sim_handeye_target_joint" type="fixed">
+      <parent link="Link_06"/>
+      <child link="sim_handeye_target_link"/>
+      <origin xyz="0.0 0.0 -0.16" rpy="${PI} 0 0"/>
+    </joint>
+
+    <link name="sim_handeye_target_link">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0.001"/>
+        <inertia ixx="1e-6" ixy="0.0" ixz="0.0" iyy="1e-6" iyz="0.0" izz="1e-6"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh
+            filename="package://jaka_description/meshes/handeye_target/handeye_charuco_target.dae"
+            scale="0.070392857 0.09855 1.0" />
+        </geometry>
+      </visual>
+    </link>
+  </xacro:if>
 
     <!-- LINK -->
   <link name="world" />

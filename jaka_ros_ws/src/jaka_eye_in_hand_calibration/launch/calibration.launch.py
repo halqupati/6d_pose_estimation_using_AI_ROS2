@@ -19,7 +19,7 @@ from launch_ros.substitutions import FindPackageShare
 from moveit_configs_utils import MoveItConfigsBuilder
 
 
-def _build_gazebo_moveit_config():
+def _build_gazebo_moveit_config(use_handeye_sim_target="false"):
     moveit_config_pkg = get_package_share_directory("jaka_s12_moveit_config")
     initial_positions_file = os.path.join(moveit_config_pkg, "config", "initial_positions.yaml")
     return (
@@ -29,12 +29,13 @@ def _build_gazebo_moveit_config():
             mappings={
                 "use_gazebo": "true",
                 "use_rviz_sim": "false",
+                "use_handeye_sim_target": use_handeye_sim_target,
                 "initial_positions_file": initial_positions_file,
             },
         )
         .robot_description_semantic(file_path="config/jaka_s12.srdf")
         .robot_description_kinematics(file_path="config/kinematics.yaml")
-        .trajectory_execution(file_path="config/moveit_controllers.yaml")
+        .trajectory_execution(file_path="config/moveit_controllers_sim.yaml")
         .planning_pipelines(pipelines=["ompl"])
         .joint_limits(file_path="config/joint_limits.yaml")
         .to_moveit_configs()
@@ -60,8 +61,27 @@ def _build_sim_actions(context):
     tracking_marker_frame = LaunchConfiguration("tracking_marker_frame").perform(context)
     calibration_name = LaunchConfiguration("calibration_name").perform(context)
     freehand_robot_movement = LaunchConfiguration("freehand_robot_movement").perform(context)
+    use_handeye_sim_target = LaunchConfiguration("use_handeye_sim_target").perform(context).lower()
+    use_gazebo_checkerboard_defaults = (
+        LaunchConfiguration("use_gazebo_checkerboard_defaults").perform(context).lower() == "true"
+    )
+    sim_checkerboard_size = LaunchConfiguration("sim_checkerboard_size").perform(context)
+    sim_square_size_m = LaunchConfiguration("sim_square_size_m").perform(context)
+    sim_pattern = LaunchConfiguration("sim_pattern").perform(context)
 
-    moveit_config = _build_gazebo_moveit_config()
+    checkerboard_size = (
+        sim_checkerboard_size
+        if use_gazebo_checkerboard_defaults
+        else LaunchConfiguration("checkerboard_size").perform(context)
+    )
+    square_size_m = (
+        sim_square_size_m
+        if use_gazebo_checkerboard_defaults
+        else LaunchConfiguration("square_size_m").perform(context)
+    )
+    pattern = sim_pattern if use_gazebo_checkerboard_defaults else LaunchConfiguration("pattern").perform(context)
+
+    moveit_config = _build_gazebo_moveit_config(use_handeye_sim_target)
     robot_description = moveit_config.robot_description["robot_description"]
     moveit_config_pkg = get_package_share_directory("jaka_s12_moveit_config")
     models_path = os.path.join(get_package_share_directory("jaka_description"), "worlds")
@@ -131,10 +151,42 @@ def _build_sim_actions(context):
             output="screen",
             arguments=[
                 "/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock",
+                "/rgbd_camera/image@sensor_msgs/msg/Image[ignition.msgs.Image",
+                "/rgbd_camera/camera_info@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo",
+                "/rgbd_camera/depth_image@sensor_msgs/msg/Image[ignition.msgs.Image",
+                "/rgbd_camera/points@sensor_msgs/msg/PointCloud2[ignition.msgs.PointCloudPacked",
                 "/rgbd_mounted_camera/image@sensor_msgs/msg/Image[ignition.msgs.Image",
                 "/rgbd_mounted_camera/camera_info@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo",
                 "/rgbd_mounted_camera/depth_image@sensor_msgs/msg/Image[ignition.msgs.Image",
                 "/rgbd_mounted_camera/points@sensor_msgs/msg/PointCloud2[ignition.msgs.PointCloudPacked",
+            ],
+        ),
+        Node(
+            package="jaka_eye_in_hand_calibration",
+            executable="follow_joint_trajectory_proxy.py",
+            name="jaka_s12_safe_controller_proxy",
+            output="screen",
+            parameters=[
+                {
+                    "proxy_action_name": "/jaka_s12_safe_controller/follow_joint_trajectory",
+                    "target_action_name": "/jaka_s12_controller/follow_joint_trajectory",
+                    "min_point_separation_sec": 0.001,
+                    "wait_for_server_timeout_sec": 10.0,
+                }
+            ],
+        ),
+        Node(
+            package="jaka_eye_in_hand_calibration",
+            executable="follow_joint_trajectory_proxy.py",
+            name="custom_gripper_safe_controller_proxy",
+            output="screen",
+            parameters=[
+                {
+                    "proxy_action_name": "/custom_gripper_safe_controller/follow_joint_trajectory",
+                    "target_action_name": "/custom_gripper_controller/follow_joint_trajectory",
+                    "min_point_separation_sec": 0.001,
+                    "wait_for_server_timeout_sec": 10.0,
+                }
             ],
         ),
         Node(
@@ -194,6 +246,22 @@ def _build_sim_actions(context):
                         + " --once"
                     )
                 ),
+                LogInfo(
+                    msg=(
+                        "A simulation ChArUco target is rigidly attached to Link_06. "
+                        "In the HandEyeCalibration panel use target type ChArUco with: "
+                        "squares X=5, squares Y=7, marker size(px)=200, square size(px)=320, "
+                        "margin(px)=8, border(bits)=1, dictionary=DICT_5X5_250, "
+                        "longest board side(m)=0.1971, measured marker size(m)=0.0176."
+                    )
+                )
+                if use_handeye_sim_target == "true"
+                else LogInfo(
+                    msg=(
+                        "No simulation hand-eye target is attached to the robot. "
+                        "Set use_handeye_sim_target:=true if you want a built-in ChArUco target."
+                    )
+                ),
             ]
         )
     elif method == "intrinsics":
@@ -205,6 +273,27 @@ def _build_sim_actions(context):
                         + sim_image_topic
                         + " and "
                         + sim_camera_info_topic
+                        + " with board size "
+                        + checkerboard_size
+                        + ", square size "
+                        + square_size_m
+                        + " m, pattern "
+                        + pattern
+                    )
+                ),
+                LogInfo(
+                    msg=(
+                        "The default Gazebo calibration target is jaka_description/worlds/checkerboard_plane: "
+                        "an 8x8-square checkerboard, so camera_calibration should use 7x7 internal corners. "
+                        "Set use_gazebo_checkerboard_defaults:=false if you replace the simulated board with one "
+                        "that matches your real calibration target."
+                    )
+                )
+                if use_gazebo_checkerboard_defaults
+                else LogInfo(
+                    msg=(
+                        "Using the user-provided checkerboard parameters for simulation. "
+                        "Make sure the simulated board geometry matches checkerboard_size and square_size_m."
                     )
                 ),
                 TimerAction(
@@ -217,11 +306,11 @@ def _build_sim_actions(context):
                                 "camera_calibration",
                                 "cameracalibrator",
                                 "--size",
-                                LaunchConfiguration("checkerboard_size").perform(context),
+                                checkerboard_size,
                                 "--square",
-                                LaunchConfiguration("square_size_m").perform(context),
+                                square_size_m,
                                 "--pattern",
-                                LaunchConfiguration("pattern").perform(context),
+                                pattern,
                                 "--queue-size",
                                 LaunchConfiguration("queue_size").perform(context),
                                 "--max-chessboard-speed",
@@ -319,9 +408,14 @@ def generate_launch_description():
         DeclareLaunchArgument("sim_tracking_base_frame", default_value="mounted_camera_link"),
         DeclareLaunchArgument("tracking_marker_frame", default_value="handeye_target"),
         DeclareLaunchArgument("freehand_robot_movement", default_value="true"),
+        DeclareLaunchArgument("use_handeye_sim_target", default_value="false"),
         DeclareLaunchArgument("checkerboard_size", default_value="8x6"),
         DeclareLaunchArgument("square_size_m", default_value="0.024"),
         DeclareLaunchArgument("pattern", default_value="chessboard"),
+        DeclareLaunchArgument("use_gazebo_checkerboard_defaults", default_value="true"),
+        DeclareLaunchArgument("sim_checkerboard_size", default_value="7x7"),
+        DeclareLaunchArgument("sim_square_size_m", default_value="0.25"),
+        DeclareLaunchArgument("sim_pattern", default_value="chessboard"),
         DeclareLaunchArgument("image_topic", default_value="/camera/camera/color/image_raw"),
         DeclareLaunchArgument("camera_namespace_for_info", default_value="/camera/camera/color"),
         DeclareLaunchArgument("sim_image_topic", default_value="/rgbd_mounted_camera/image"),

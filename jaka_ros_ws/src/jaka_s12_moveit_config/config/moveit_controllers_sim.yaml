@@ -1,0 +1,38 @@
+# moveit_controllers_sim.yaml
+# ==========================
+# Simulation-only MoveIt controller routing.
+# MoveIt sends trajectories to proxy action servers, and the proxies forward
+# them to ros2_control after fixing non-increasing time_from_start values.
+
+moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
+
+moveit_simple_controller_manager:
+  controller_names:
+    - jaka_s12_safe_controller
+    - custom_gripper_safe_controller
+
+  jaka_s12_safe_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+      - joint_1
+      - joint_2
+      - joint_3
+      - joint_4
+      - joint_5
+      - joint_6
+
+  custom_gripper_safe_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+      - gripper_jaw_left_joint
+
+trajectory_execution:
+  allowed_execution_duration_scaling: 1.5
+  allowed_goal_duration_margin: 2.0
+  allowed_start_tolerance: 0.01
+  execution_duration_monitoring: false
+  moveit_manage_controllers: true

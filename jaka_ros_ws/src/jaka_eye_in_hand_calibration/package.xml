@@ -11,10 +11,12 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>action_msgs</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>camera_calibration</exec_depend>
   <exec_depend>controller_manager</exec_depend>
+  <exec_depend>control_msgs</exec_depend>
   <exec_depend>custom_gripper_pkg</exec_depend>
   <exec_depend>depth_image_proc</exec_depend>
   <exec_depend>easy_handeye2</exec_depend>
@@ -24,6 +26,7 @@
   <exec_depend>moveit_configs_utils</exec_depend>
   <exec_depend>moveit_ros_move_group</exec_depend>
   <exec_depend>moveit_ros_visualization</exec_depend>
+  <exec_depend>rclpy</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>realsense2_camera</exec_depend>
   <exec_depend>ros_gz_bridge</exec_depend>

@@ -1,10 +1,15 @@
 planning_plugin: chomp_interface/CHOMPPlanner
+enable_failure_recovery: true
+jiggle_fraction: 0.05
 request_adapters: >-
+  default_planner_request_adapters/AddRuckigTrajectorySmoothing
   default_planner_request_adapters/AddTimeOptimalParameterization
+  default_planner_request_adapters/ResolveConstraintFrames
   default_planner_request_adapters/FixWorkspaceBounds
   default_planner_request_adapters/FixStartStateBounds
   default_planner_request_adapters/FixStartStateCollision
   default_planner_request_adapters/FixStartStatePathConstraints
+start_state_max_bounds_error: 0.1
 planning_time_limit: 10.0
 max_iterations: 200
 max_iterations_after_collision_free: 5
@@ -30,6 +35,5 @@ collision_clearance: 0.2
 collision_threshold: 0.07
 random_jump_amount: 1.0
 use_stochastic_descent: true
-enable_failure_recovery: false
 max_recovery_attempts: 5
 trajectory_initialization_method: "quintic-spline"

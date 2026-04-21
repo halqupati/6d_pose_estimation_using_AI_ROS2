@@ -4,6 +4,7 @@
     <xacro:property name="PI" value="3.14159274"/>
     <xacro:arg name="use_gazebo" default="true"/>
     <xacro:arg name="use_rviz_sim" default="false"/>
+    <xacro:arg name="use_handeye_sim_target" default="false"/>
 
     <!-- Import jaka_s12 urdf file -->
     <xacro:include filename="$(find jaka_description)/urdf/jaka_s12.urdf" />
