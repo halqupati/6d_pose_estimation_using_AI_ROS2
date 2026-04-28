@@ -1,9 +1,0 @@
-repositories:
-  easy_handeye2_camera_calibration_with_ros2:
-    type: git
-    url: https://github.com/halqupati/easy_handeye2_camera_calibration_with_ros2.git
-    version: master
-  moveit_calibration:
-    type: git
-    url: https://github.com/moveit/moveit_calibration.git
-    version: ros2
