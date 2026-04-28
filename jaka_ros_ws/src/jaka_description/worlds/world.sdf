@@ -111,6 +111,17 @@
         <pose>0 0.81 0.0 0 0 0</pose>
     </include>
     
+    <!-- ChArUco board for MoveIt hand-eye calibration (eye-in-hand).
+         Parameters: squaresX=5, squaresY=7, squareLength=0.04m,
+         markerLength=0.03m, dictionary=DICT_4X4_50.
+         Placed flat on the table, face pointing up (+Z). -->
+    <include>
+        <uri>model://handeye_charuco_target</uri>
+        <name>handeye_charuco_target</name>
+        <pose>-0.30 0.50 1.035 0 0 0</pose>
+    </include>
+
+    <!-- Checkerboard plane (kept for camera intrinsic calibration) -->
     <include>
         <uri>model://checkerboard_plane</uri>
         <name>checkerboard plane</name>
