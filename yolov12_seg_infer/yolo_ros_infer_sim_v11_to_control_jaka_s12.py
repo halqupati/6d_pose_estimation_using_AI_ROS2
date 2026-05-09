@@ -88,9 +88,10 @@ class CameraSystem(Node):
 class NutEstimatorAAE(Node):
     def __init__(self):
         super().__init__("yolo_estimator_node")
+        # Update from Yolov12-seg to Yolov26-seg
         self.model = YOLO(
             "/home/ubuntu/6d_pose_estimation/6d_pose_estimation_using_AI_ROS2/"
-            "yolov12_seg_infer/model/best.pt"
+            "yolov12_seg_infer/model/best_m6_yolov26.pt"
         )
         self.model.to("cpu")
         self.pos_angle_pub = self.create_publisher(Float32MultiArray, "/pos_angle", 10)
