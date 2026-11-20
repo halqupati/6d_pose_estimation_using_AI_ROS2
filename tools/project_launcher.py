@@ -14,10 +14,13 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
+from urllib.error import URLError
+from urllib.request import urlopen
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 ROS_SETUP = ROOT_DIR / "jaka_ros_ws" / "install" / "setup.bash"
+AAE_WORKSPACE_DIR = ROOT_DIR / "aae_infer" / "autoencoder_ws"
 SIM_LAUNCH_CANDIDATES = [
     "jaka_s12_with_two_camera_simulation_with_pcl_and_custom_gripper_uder_test.launch.py",
     "jaka_s12_with_two_camera_simulation_with_pcl_and_custom_gripper.launch.py",
@@ -55,6 +58,27 @@ START = "#16A34A"
 START_ACTIVE = "#166534"
 WARNING_WINDOW_SEC = 8.0
 LAUNCHER_STATUS_PREFIX = "[LAUNCHER_STATUS]"
+PROCESS_START_TIMEOUT_SEC = 8.0
+# Cold Gazebo + MoveIt start with repeated `ros2 control list_controllers` polling
+# regularly exceeds 60 s on this machine; 120 s avoids false "not ready" failures.
+SIM_READY_TIMEOUT_SEC = 120.0
+AAE_READY_TIMEOUT_SEC = 90.0
+STARTUP_POLL_INTERVAL_SEC = 0.5
+
+# This launcher drives the Gazebo simulation only. The bin-picking node is always
+# started with robot_mode:=sim; the physical robot uses
+# jaka_hardware_bringup/robot_hw.launch.py (robot_mode:=real) instead.
+LAUNCHER_ROBOT_MODE = "sim"
+BIN_PICKING_NODE_NAME = "/bin_picking_node_v5_to_control_jaka_s12"
+
+# Conservative project defaults (same values as the real-robot launch defaults).
+# Faster values are only reachable through the explicit simulation presets below.
+DEFAULT_MOTION_PROFILE = (0.30, 0.30, 0.002, 1.20)
+
+# One nut type for the whole perception stack: passed to both AAE and YOLO so they
+# can never be started with mismatched models. "m20" = legacy trained models,
+# "m6" = DIN 934 M6 (requires trained weights; see aae_ros_infer_sim_v4.py).
+NUT_MODEL = os.environ.get("NUT_MODEL", "m20").strip().lower()
 
 
 def shell_quote(path: Path | str) -> str:
@@ -114,6 +138,34 @@ def build_ros_launch_command(package: str, launch_file: str, launch_args: dict[s
 
 def build_ros_shell_command(command: str) -> str:
     return f"source {shell_quote(ROS_SETUP)} && {command}"
+
+
+def run_shell_capture(command: str, timeout_sec: float = 15.0) -> tuple[int, str]:
+    try:
+        completed = subprocess.run(
+            ["/bin/bash", "-lc", command],
+            cwd=ROOT_DIR,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+            check=False,
+        )
+        output = (completed.stdout or "") + (completed.stderr or "")
+        return completed.returncode, output
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        return 124, f"{stdout}{stderr}"
+
+
+def controller_is_active(controllers_output: str, controller_name: str) -> bool:
+    for line in controllers_output.splitlines():
+        parts = line.split()
+        if not parts or parts[0] != controller_name:
+            continue
+        if "active" in {part.lower() for part in parts[1:]}:
+            return True
+    return False
 
 
 def is_tcp_port_available(port: int, host: str = "127.0.0.1") -> bool:
@@ -357,10 +409,11 @@ class ProjectLauncherApp:
         self.conda_exe = detect_conda_executable()
         self.aae_port = choose_available_port([5001, 5003, 5005])
 
-        self.velocity_var = tk.DoubleVar(value=0.55)
-        self.acceleration_var = tk.DoubleVar(value=0.40)
-        self.grasp_descent_step_var = tk.DoubleVar(value=0.002)
-        self.gripper_motion_duration_var = tk.DoubleVar(value=1.20)
+        default_velocity, default_acceleration, default_descent, default_gripper = DEFAULT_MOTION_PROFILE
+        self.velocity_var = tk.DoubleVar(value=default_velocity)
+        self.acceleration_var = tk.DoubleVar(value=default_acceleration)
+        self.grasp_descent_step_var = tk.DoubleVar(value=default_descent)
+        self.gripper_motion_duration_var = tk.DoubleVar(value=default_gripper)
         self.velocity_text = tk.StringVar()
         self.acceleration_text = tk.StringVar()
         self.grasp_descent_step_text = tk.StringVar()
@@ -375,6 +428,8 @@ class ProjectLauncherApp:
         self.collision_indicator_canvas: tk.Canvas | None = None
         self.collision_indicator_oval: int | None = None
         self.picked_count_text = tk.StringVar(value="0")
+        self.pick_time_text = tk.StringVar(value="--")
+        self.pick_time_detail_text = tk.StringVar(value="Waiting for detected nut pose.")
         self.robot_case_text = tk.StringVar(value="Idle")
         self.robot_case_detail_text = tk.StringVar(value="Bin-picking process not running.")
         self.error_count = 0
@@ -383,6 +438,8 @@ class ProjectLauncherApp:
         self.warning_until = 0.0
         self.warning_message = ""
         self.emergency_latched = False
+        self.startup_in_progress = False
+        self.startup_cancelled = False
 
         self.process_configs = self._default_configs()
         self.processes: dict[str, ManagedProcess] = {}
@@ -526,7 +583,7 @@ class ProjectLauncherApp:
         tk.Label(motion_card, text="Motion Profile", bg=PANEL_BG, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
         tk.Label(
             motion_card,
-            text="Velocity and acceleration affect MoveIt retiming. Grasp descent step and gripper duration often have the biggest effect on cycle time.",
+            text="SIMULATION ONLY (robot_mode=sim). Defaults are the conservative real-robot values; Fast / Very Fast presets are for Gazebo and are rejected by the node on the physical JAKA S12. Sequence 2 is usually limited most by pick descent step, and sequence 3 by gripper time.",
             bg=PANEL_BG,
             fg=TEXT,
             wraplength=520,
@@ -538,11 +595,11 @@ class ProjectLauncherApp:
         self._build_slider_row(motion_card, "Acceleration", self.acceleration_var, self.acceleration_text)
         self._build_slider_row(
             motion_card,
-            "Descent Step",
+            "Pick Descent",
             self.grasp_descent_step_var,
             self.grasp_descent_step_text,
             from_=0.001,
-            to=0.012,
+            to=0.020,
             resolution=0.001,
         )
         self._build_slider_row(
@@ -550,7 +607,7 @@ class ProjectLauncherApp:
             "Gripper Time",
             self.gripper_motion_duration_var,
             self.gripper_motion_duration_text,
-            from_=0.10,
+            from_=0.05,
             to=1.50,
             resolution=0.05,
         )
@@ -562,7 +619,7 @@ class ProjectLauncherApp:
             "Safe",
             "#334155",
             "#1E293B",
-            lambda: self.set_motion_profile(0.30, 0.25, 0.003, 1.00),
+            lambda: self.set_motion_profile(0.35, 0.25, 0.003, 0.40),
             width=10,
         ).pack(side=tk.LEFT)
         self._make_button(
@@ -570,7 +627,7 @@ class ProjectLauncherApp:
             "Balanced",
             "#2563EB",
             "#1D4ED8",
-            lambda: self.set_motion_profile(0.55, 0.40, 0.005, 0.70),
+            lambda: self.set_motion_profile(0.70, 0.50, 0.006, 0.25),
             width=10,
         ).pack(side=tk.LEFT, padx=(8, 0))
         self._make_button(
@@ -578,7 +635,15 @@ class ProjectLauncherApp:
             "Fast",
             "#7C3AED",
             "#5B21B6",
-            lambda: self.set_motion_profile(0.80, 0.60, 0.008, 0.35),
+            lambda: self.set_motion_profile(0.90, 0.80, 0.012, 0.10),
+            width=10,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        self._make_button(
+            preset_row,
+            "Very Fast",
+            "#BE123C",
+            "#9F1239",
+            lambda: self.set_motion_profile(1.00, 1.00, 0.018, 0.05),
             width=10,
         ).pack(side=tk.LEFT, padx=(8, 0))
         self._make_button(preset_row, "Apply Live", START, START_ACTIVE, self.apply_motion_profile, width=12).pack(side=tk.RIGHT)
@@ -587,8 +652,9 @@ class ProjectLauncherApp:
         telemetry_card.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
         telemetry_card.grid_columnconfigure(0, weight=1)
         telemetry_card.grid_columnconfigure(1, weight=1)
-        telemetry_card.grid_columnconfigure(2, weight=2)
-        telemetry_card.grid_columnconfigure(3, weight=1)
+        telemetry_card.grid_columnconfigure(2, weight=1)
+        telemetry_card.grid_columnconfigure(3, weight=2)
+        telemetry_card.grid_columnconfigure(4, weight=1)
 
         tk.Label(
             telemetry_card,
@@ -596,7 +662,7 @@ class ProjectLauncherApp:
             bg=PANEL_BG,
             fg=MUTED,
             font=("TkDefaultFont", 10, "bold"),
-        ).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 12))
+        ).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 12))
 
         collision_box = tk.Frame(telemetry_card, bg=PANEL_ALT, padx=14, pady=12, highlightthickness=1, highlightbackground="#1F2937")
         collision_box.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
@@ -650,8 +716,28 @@ class ProjectLauncherApp:
             font=("TkDefaultFont", 9),
         ).pack(anchor="w")
 
+        pick_time_box = tk.Frame(telemetry_card, bg=PANEL_ALT, padx=14, pady=12, highlightthickness=1, highlightbackground="#1F2937")
+        pick_time_box.grid(row=1, column=2, sticky="nsew", padx=8)
+        tk.Label(pick_time_box, text="Detect -> Pick", bg=PANEL_ALT, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        tk.Label(
+            pick_time_box,
+            textvariable=self.pick_time_text,
+            bg=PANEL_ALT,
+            fg="#F8FAFC",
+            font=("TkDefaultFont", 24, "bold"),
+        ).pack(anchor="w", pady=(10, 4))
+        tk.Label(
+            pick_time_box,
+            textvariable=self.pick_time_detail_text,
+            bg=PANEL_ALT,
+            fg=TEXT,
+            wraplength=220,
+            justify=tk.LEFT,
+            font=("TkDefaultFont", 9),
+        ).pack(anchor="w")
+
         case_box = tk.Frame(telemetry_card, bg=PANEL_ALT, padx=14, pady=12, highlightthickness=1, highlightbackground="#1F2937")
-        case_box.grid(row=1, column=2, sticky="nsew", padx=8)
+        case_box.grid(row=1, column=3, sticky="nsew", padx=8)
         tk.Label(case_box, text="Current Case", bg=PANEL_ALT, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
         tk.Label(
             case_box,
@@ -673,7 +759,7 @@ class ProjectLauncherApp:
         ).pack(anchor="w")
 
         errors_box = tk.Frame(telemetry_card, bg=PANEL_ALT, padx=14, pady=12, highlightthickness=1, highlightbackground="#1F2937")
-        errors_box.grid(row=1, column=3, sticky="nsew", padx=(8, 0))
+        errors_box.grid(row=1, column=4, sticky="nsew", padx=(8, 0))
         tk.Label(errors_box, text="Errors", bg=PANEL_ALT, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
         tk.Label(
             errors_box,
@@ -868,6 +954,8 @@ class ProjectLauncherApp:
         self.collision_status_text.set("Unknown")
         self.collision_detail_text.set("Waiting for collision monitor data.")
         self.picked_count_text.set("0")
+        self.pick_time_text.set("--")
+        self.pick_time_detail_text.set("Waiting for first detected nut pose.")
         self.robot_case_text.set("Starting")
         self.robot_case_detail_text.set("Bin-picking process launch requested.")
         self._update_collision_indicator()
@@ -877,6 +965,8 @@ class ProjectLauncherApp:
         self.collision_active = False
         self.collision_status_text.set("Offline")
         self.collision_detail_text.set("Bin-picking stack is not running.")
+        self.pick_time_text.set("--")
+        self.pick_time_detail_text.set("Bin-picking stack is not running.")
         self.robot_case_text.set("Stopped")
         self.robot_case_detail_text.set("Bin-picking process not running.")
         self._update_collision_indicator()
@@ -943,6 +1033,25 @@ class ProjectLauncherApp:
 
         if "picked_count" in fields:
             self.picked_count_text.set(fields["picked_count"])
+
+        if "pick_time_sec" in fields or "pick_timer_state" in fields:
+            pick_time_state = fields.get("pick_timer_state", "").strip()
+            pick_time_sec = None
+            if "pick_time_sec" in fields:
+                try:
+                    pick_time_sec = float(fields["pick_time_sec"])
+                except ValueError:
+                    pick_time_sec = None
+
+            if pick_time_state == "running" and pick_time_sec is not None:
+                self.pick_time_text.set(f"{pick_time_sec:.2f}s")
+                self.pick_time_detail_text.set("Detect-to-pick timer is running for the current nut.")
+            elif pick_time_state == "last" and pick_time_sec is not None and pick_time_sec > 0.0:
+                self.pick_time_text.set(f"{pick_time_sec:.2f}s")
+                self.pick_time_detail_text.set("Last completed detect-to-pick time.")
+            elif pick_time_state == "idle":
+                self.pick_time_text.set("--")
+                self.pick_time_detail_text.set("Waiting for detected nut pose.")
 
         if "collision" in fields:
             self.collision_seen = True
@@ -1016,6 +1125,8 @@ class ProjectLauncherApp:
             "bin_packing_pkg",
             bin_launch,
             {
+                "use_sim_time": "true",
+                "robot_mode": LAUNCHER_ROBOT_MODE,
                 "arm_velocity_scaling": f"{self.velocity_var.get():.2f}",
                 "arm_acceleration_scaling": f"{self.acceleration_var.get():.2f}",
                 "grasp_descent_step": f"{self.grasp_descent_step_var.get():.4f}",
@@ -1027,9 +1138,13 @@ class ProjectLauncherApp:
         return build_conda_python_command(
             self.conda_exe,
             "aae_py37_tf26",
-            ROOT_DIR / "aae_infer" / "autoencoder_ws",
+            AAE_WORKSPACE_DIR,
             "aae_ros_infer_sim_v4.py",
-            {"AAE_SERVER_PORT": str(self.aae_port)},
+            {
+                "AAE_SERVER_PORT": str(self.aae_port),
+                "AE_WORKSPACE_PATH": str(AAE_WORKSPACE_DIR),
+                "AAE_NUT_MODEL": NUT_MODEL,
+            },
         )
 
     def _build_yolo_command(self, script_name: str | None = None) -> str:
@@ -1039,8 +1154,161 @@ class ProjectLauncherApp:
             "yolov12_py10",
             ROOT_DIR / "yolov12_seg_infer",
             yolo_script,
-            {"AAE_SERVER_PORT": str(self.aae_port)},
+            {"AAE_SERVER_PORT": str(self.aae_port), "NUT_MODEL": NUT_MODEL},
         )
+
+    def _append_launcher_log(self, key: str, message: str) -> None:
+        if not message.endswith("\n"):
+            message += "\n"
+        self.log_queue.put(("log", key, f"[launcher] {message}"))
+
+    def _run_ros_cli(self, command: str, timeout_sec: float = 15.0) -> tuple[int, str]:
+        return run_shell_capture(build_ros_shell_command(command), timeout_sec=timeout_sec)
+
+    def _startup_should_abort(self) -> bool:
+        return self.startup_cancelled or self.emergency_latched
+
+    def _simulation_stack_ready(self) -> bool:
+        rc, controllers_output = self._run_ros_cli("ros2 control list_controllers", timeout_sec=15.0)
+        if rc != 0:
+            return False
+
+        required_controllers = (
+            "joint_state_broadcaster",
+            "jaka_s12_controller",
+            "custom_gripper_controller",
+        )
+        if not all(controller_is_active(controllers_output, name) for name in required_controllers):
+            return False
+
+        rc, nodes_output = self._run_ros_cli("ros2 node list", timeout_sec=10.0)
+        if rc != 0:
+            return False
+
+        required_nodes = ("/move_group", "/controller_manager", "/robot_state_publisher")
+        return all(node in nodes_output for node in required_nodes)
+
+    def _aae_server_ready(self) -> bool:
+        try:
+            with urlopen(f"http://127.0.0.1:{self.aae_port}/health", timeout=1.5) as response:
+                return response.status == 200
+        except URLError:
+            return False
+        except OSError:
+            return False
+
+    def _wait_for_condition(self, condition, timeout_sec: float) -> bool:
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            if self._startup_should_abort():
+                return False
+            if condition():
+                return True
+            time.sleep(STARTUP_POLL_INTERVAL_SEC)
+        return False
+
+    def _sleep_with_abort(self, duration_sec: float) -> bool:
+        deadline = time.time() + duration_sec
+        while time.time() < deadline:
+            if self._startup_should_abort():
+                return False
+            time.sleep(min(STARTUP_POLL_INTERVAL_SEC, max(0.0, deadline - time.time())))
+        return True
+
+    def _start_process_from_sequence(self, key: str, timeout_sec: float = PROCESS_START_TIMEOUT_SEC) -> bool:
+        if self._startup_should_abort():
+            return False
+        started = threading.Event()
+
+        def _start() -> None:
+            self.start_process(key)
+            started.set()
+
+        self.root.after(0, _start)
+        started.wait(timeout=2.0)
+
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            if self._startup_should_abort():
+                return False
+            if self.processes[key].is_running():
+                return True
+            time.sleep(0.25)
+        return self.processes[key].is_running()
+
+    def _report_startup_failure(self, key: str, message: str) -> None:
+        self.warning_until = time.time() + WARNING_WINDOW_SEC
+        self.warning_message = message
+        self._append_launcher_log(key, message)
+        self.root.after(0, self._recompute_robot_status)
+
+    def _start_all_sequence(self) -> None:
+        try:
+            self._append_launcher_log("sim", "Starting simulation stack.")
+            if not self._start_process_from_sequence("sim"):
+                if self._startup_should_abort():
+                    self._append_launcher_log("sim", "Startup cancelled before simulation finished starting.")
+                    return
+                self._report_startup_failure("sim", "Simulation process did not stay up after start.")
+                return
+
+            self._append_launcher_log("sim", "Waiting for simulation controllers and MoveIt to become ready.")
+            if not self._wait_for_condition(self._simulation_stack_ready, SIM_READY_TIMEOUT_SEC):
+                if self._startup_should_abort():
+                    self._append_launcher_log("sim", "Startup cancelled while waiting for simulation readiness.")
+                    return
+                self._report_startup_failure(
+                    "sim",
+                    "Simulation stack did not become ready in time. Check controllers, MoveIt, and ros_gz_bridge.",
+                )
+                return
+
+            self._append_launcher_log("bin_picking", "Starting bin-picking nodes with simulation time enabled.")
+            if not self._start_process_from_sequence("bin_picking"):
+                if self._startup_should_abort():
+                    self._append_launcher_log("bin_picking", "Startup cancelled before bin-picking finished starting.")
+                    return
+                self._report_startup_failure("bin_picking", "Bin-picking process did not stay up after start.")
+                return
+
+            if not self._sleep_with_abort(2.0):
+                self._append_launcher_log("bin_picking", "Startup cancelled during post-launch settle time.")
+                return
+
+            self._append_launcher_log("aae", f"Starting AAE inference on port {self.aae_port}.")
+            if not self._start_process_from_sequence("aae"):
+                if self._startup_should_abort():
+                    self._append_launcher_log("aae", "Startup cancelled before AAE finished starting.")
+                    return
+                self._report_startup_failure("aae", "AAE process did not stay up after start.")
+                return
+
+            self._append_launcher_log("aae", "Waiting for AAE health endpoint.")
+            if not self._wait_for_condition(self._aae_server_ready, AAE_READY_TIMEOUT_SEC):
+                if self._startup_should_abort():
+                    self._append_launcher_log("aae", "Startup cancelled while waiting for AAE readiness.")
+                    return
+                self._report_startup_failure(
+                    "aae",
+                    f"AAE server did not report healthy on port {self.aae_port}.",
+                )
+                return
+
+            self._append_launcher_log("yolo", "Starting YOLO detection after AAE is healthy.")
+            if not self._start_process_from_sequence("yolo"):
+                if self._startup_should_abort():
+                    self._append_launcher_log("yolo", "Startup cancelled before YOLO finished starting.")
+                    return
+                self._report_startup_failure("yolo", "YOLO process did not stay up after start.")
+                return
+
+            self._append_launcher_log(
+                "yolo",
+                "Launcher startup sequence completed. The stack now matches the working manual order.",
+            )
+            self.root.after(0, self._recompute_robot_status)
+        finally:
+            self.startup_in_progress = False
 
     def _refresh_dynamic_commands(self) -> None:
         for config in self.process_configs:
@@ -1088,7 +1356,24 @@ class ProjectLauncherApp:
             f"grasp_descent_step={grasp_descent_step:.4f}, gripper_motion_duration={gripper_motion_duration:.2f}\n",
         )
 
-        if not self.processes.get("bin_picking") or not self.processes["bin_picking"].is_running():
+        bin_process = self.processes.get("bin_picking")
+        owned_running = (
+            bin_process is not None and bin_process.process is not None and bin_process.process.poll() is None
+        )
+        if bin_process is not None and not owned_running and bin_process.is_running():
+            # A matching node exists but was NOT started by this launcher (e.g. the real-robot
+            # bringup). Never push simulation motion settings into it.
+            self.warning_until = time.time() + WARNING_WINDOW_SEC
+            self.warning_message = "Apply Live refused: bin-picking node was not started by this launcher"
+            self._append_log(
+                "bin_picking",
+                "[launcher] Apply Live refused: a bin-picking node is running that this launcher did not start. "
+                "Simulation presets are never applied to externally launched (possibly real-robot) nodes.\n",
+            )
+            self._recompute_robot_status()
+            return
+
+        if not owned_running:
             self.robot_detail_text.set(
                 "Motion profile prepared for next start: "
                 f"velocity={velocity:.2f}, acceleration={acceleration:.2f}, "
@@ -1104,7 +1389,26 @@ class ProjectLauncherApp:
         acceleration = self.acceleration_var.get()
         grasp_descent_step = self.grasp_descent_step_var.get()
         gripper_motion_duration = self.gripper_motion_duration_var.get()
-        node_name = "/bin_picking_node_v5_to_control_jaka_s12"
+        node_name = BIN_PICKING_NODE_NAME
+
+        # Interlock: only push settings into a node that declares itself robot_mode=sim.
+        rc, mode_output = self._run_ros_cli(
+            f"ros2 param get {shlex.quote(node_name)} robot_mode", timeout_sec=10.0
+        )
+        if rc != 0 or f"String value is: {LAUNCHER_ROBOT_MODE}" not in mode_output:
+            self.warning_until = time.time() + WARNING_WINDOW_SEC
+            self.warning_message = "Apply Live refused: target node is not robot_mode=sim"
+            self.log_queue.put(
+                (
+                    "log",
+                    "bin_picking",
+                    "[launcher] Apply Live refused: could not confirm "
+                    f"{node_name} robot_mode={LAUNCHER_ROBOT_MODE}. Output: {mode_output.strip() or '<empty>'}\n",
+                )
+            )
+            self.root.after(0, self._recompute_robot_status)
+            return
+
         command = build_ros_shell_command(
             f"ros2 param set {shlex.quote(node_name)} arm_velocity_scaling {velocity:.2f} && "
             f"ros2 param set {shlex.quote(node_name)} arm_acceleration_scaling {acceleration:.2f} && "
@@ -1158,19 +1462,23 @@ class ProjectLauncherApp:
         self._recompute_robot_status()
 
     def start_all(self) -> None:
+        if self.startup_in_progress:
+            self._append_launcher_log("sim", "Start All is already in progress.")
+            return
         self.emergency_latched = False
-        startup_order = ("sim", "bin_picking", "aae", "yolo")
-        startup_delay_ms = 3500
-        for index, key in enumerate(startup_order):
-            self.root.after(index * startup_delay_ms, lambda process_key=key: self.start_process(process_key))
+        self.startup_cancelled = False
+        self.startup_in_progress = True
+        threading.Thread(target=self._start_all_sequence, daemon=True).start()
 
     def stop_all(self) -> None:
+        self.startup_cancelled = True
         for key in ("yolo", "aae", "bin_picking", "sim"):
             self.processes[key].stop()
         self._recompute_robot_status()
 
     def emergency_stop(self) -> None:
         self.emergency_latched = True
+        self.startup_cancelled = True
         self.warning_until = time.time() + WARNING_WINDOW_SEC
         self.warning_message = "Emergency stop issued. Managed processes were killed immediately."
         for key in ("yolo", "aae", "bin_picking", "sim"):

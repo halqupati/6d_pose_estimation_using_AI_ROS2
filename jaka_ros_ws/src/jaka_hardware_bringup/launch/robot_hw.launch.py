@@ -110,6 +110,9 @@ def generate_launch_description():
             ),
             launch_arguments={
                 "use_sim_time": "false",
+                # Physical JAKA S12: conservative motion defaults, real-robot limits enforced
+                # by both the launch file and the C++ node. Never pass robot_mode:=sim here.
+                "robot_mode": "real",
             }.items(),
             condition=IfCondition(use_bin_picking),
         ),

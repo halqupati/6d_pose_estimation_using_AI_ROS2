@@ -1,0 +1,12 @@
+﻿"Symbol";"Value";"Unit";
+"TraceParts.PartNumber";"10-11062001-160766";"";
+"REFERENCE";"DIN 934 - d M6 - 6";"";
+"STANDARD";"DIN 934";"";
+"TraceParts.PartVersion";"1.5.0";"";
+"TraceParts.InstanceId";"10-11062001-1607665O6T3444PKGZBU2G872DW2528";"";
+"TraceParts.PartStandardAcronym";"DIN";"";
+"TraceParts.PartTitle";"Hexagon nut, style 1 - Grades A and B";"";
+"DESIGN";"Hexagon nut DIN 934 M6-6";"";
+"TRACEPARTS";"TRACEPARTS";"";
+"TraceParts.PartLanguage";"en";"";
+"OMNICLASS23";"23.13.23.11.13.23";"";

@@ -64,18 +64,30 @@ ros2 launch bin_packing_pkg jaka_s12_with_two_camera_simulation_with_pcl_and_cus
 ```
 **2) Run moveit_config with bin_picking_node as move_group_node2
 ```bash
-ros2 launch bin_packing_pkg run_bin_picking_nodes_to_control_jaka_s12.launch.py
+ros2 launch bin_packing_pkg run_bin_picking_nodes_to_control_jaka_s12.launch.py robot_mode:=sim use_sim_time:=true
 ```
+`robot_mode` is required for simulation. The default is `real`, which enforces the conservative
+real-robot limits (velocity/acceleration <= 0.30, descent step <= 2 mm, gripper time >= 1.2 s) and
+rejects `use_sim_time:=true`. Faster values (e.g. `arm_velocity_scaling:=0.90`) are only accepted with
+`robot_mode:=sim`, and the node blocks motion in sim mode unless Gazebo is publishing `/clock`.
+
 **3) Activate AAE conda enveroment and run AAE_infer node
 ```bash
 conda activate aae_py37_tf26
-python3 aae_ros_infer_sim_v4.py
+cd aae_infer/autoencoder_ws
+export AE_WORKSPACE_PATH=$PWD
+AAE_NUT_MODEL=m20 python3 aae_ros_infer_sim_v4.py
 ```
 **4) Activate YOLOV12-seg conda enveroment and run Yolo_infer node
 ```bash
 conda activate yolov12_py10
-python3 yolo_ros_infer_sim_v11_to_control_jaka_s12.py
+cd yolov12_seg_infer
+NUT_MODEL=m20 python3 yolo_ros_infer_sim_v11_to_control_jaka_s12.py
 ```
+`AAE_NUT_MODEL` and `NUT_MODEL` must name the same nut (`m20` or `m6`); YOLO refuses to start if the
+AAE `/health` endpoint reports a different one. `m6` currently fails fast on purpose: there are no
+trained M6 AAE weights and no M6 YOLO model file yet. The launcher sets both from one `NUT_MODEL`
+environment variable (`NUT_MODEL=m20 ./tools/run_project_launcher.sh`).
 
 
 
@@ -92,6 +104,13 @@ python3 yolo_ros_infer_sim_v11_to_control_jaka_s12.py
 ![Simulation screenshot 1](media_and_files/Screenshot%20from%202026-03-12%2000-17-16.png)
 ![Simulation screenshot 2](media_and_files/Screenshot%20from%202026-03-12%2000-42-18.png)
 ![Simulation screenshot 3](media_and_files/Screenshot%20from%202026-03-12%2000-43-04.png)
+
+## Creator resources
+
+If you want to turn this project into a YouTube tutorial playlist, see:
+
+- [docs/youtube_tutorial_series_plan.md](docs/youtube_tutorial_series_plan.md)
+- [docs/youtube_publish_templates.md](docs/youtube_publish_templates.md)
 
 
 

@@ -17,9 +17,12 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -31,6 +34,20 @@
 #define COLOR_RED   "\033[31m"
 #define COLOR_RESET "\033[0m"
 
+// Motion envelope enforced when robot_mode == "real" (physical JAKA S12).
+// These are the conservative project defaults, NOT hardware-validated maxima.
+// Relaxing them requires a documented test on the real cell (reduced-speed
+// dry runs, gripper close-time measurement, descent-overshoot check), then a
+// rebuild. The same numbers are mirrored in
+// launch/run_bin_picking_nodes_to_control_jaka_s12.launch.py for early,
+// pre-launch rejection; keep both in sync.
+namespace real_robot_limits {
+constexpr double kMaxArmVelocityScaling = 0.30;
+constexpr double kMaxArmAccelerationScaling = 0.30;
+constexpr double kMaxGraspDescentStep = 0.002;       // [m]
+constexpr double kMinGripperMotionDuration = 1.20;   // [s]
+}  // namespace real_robot_limits
+
 class ControlRobot : public rclcpp::Node {
 public:
     ControlRobot()
@@ -38,6 +55,19 @@ public:
     {
         pose_callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
         timer_callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+
+        {
+            rcl_interfaces::msg::ParameterDescriptor mode_descriptor;
+            mode_descriptor.description =
+                "'real' (physical JAKA S12, conservative limits enforced) or 'sim' (Gazebo only). Read-only.";
+            mode_descriptor.read_only = true;
+            robot_mode_ = this->declare_parameter<std::string>("robot_mode", "real", mode_descriptor);
+        }
+        if (robot_mode_ != "real" && robot_mode_ != "sim") {
+            RCLCPP_FATAL(this->get_logger(), "Invalid robot_mode '%s'. Expected 'real' or 'sim'.", robot_mode_.c_str());
+            throw std::invalid_argument("invalid robot_mode: " + robot_mode_);
+        }
+        is_real_robot_ = (robot_mode_ == "real");
 
         arm_group_name_ = this->declare_parameter<std::string>("arm_group", "jaka_s12");
         gripper_group_name_ = this->declare_parameter<std::string>("gripper_group", "gripper");
@@ -50,7 +80,7 @@ public:
         lift_height_ = this->declare_parameter<double>("lift_height", 0.10);
         tool_center_offset_ = this->declare_parameter<double>("tool_center_offset", 0.019);
         grasp_final_offset_ = this->declare_parameter<double>("grasp_final_offset", 0.0);
-        grasp_descent_step_ = this->declare_parameter<double>("grasp_descent_step", 0.008);  // changed from 0.002
+        grasp_descent_step_ = this->declare_parameter<double>("grasp_descent_step", 0.002);
         pick_approach_offset_ = this->declare_parameter<double>("pick_approach_offset", 0.020);
         pick_safe_gap_z_ = this->declare_parameter<double>("pick_safe_gap_z", 0.003);
         detected_nut_height_ = this->declare_parameter<double>("detected_nut_height", 0.008);
@@ -61,8 +91,8 @@ public:
         pick_clearance_z_ = this->declare_parameter<double>("pick_clearance_z", 0.01);
         table_top_z_ = this->declare_parameter<double>("table_top_z", -0.06);
 
-        arm_velocity_scaling_ = this->declare_parameter<double>("arm_velocity_scaling", 5);
-        arm_acceleration_scaling_ = this->declare_parameter<double>("arm_acceleration_scaling", 1);
+        arm_velocity_scaling_ = this->declare_parameter<double>("arm_velocity_scaling", 0.30);
+        arm_acceleration_scaling_ = this->declare_parameter<double>("arm_acceleration_scaling", 0.30);
         arm_planning_time_ = this->declare_parameter<double>("arm_planning_time", 5.0);
 
         gripper_open_cmd_ = this->declare_parameter<double>("gripper_open_cmd", 0.0);
@@ -70,8 +100,10 @@ public:
         gripper_min_position_ = this->declare_parameter<double>("gripper_min_position", -0.026);
         gripper_max_position_ = this->declare_parameter<double>("gripper_max_position", 0.001);
         empty_close_threshold_ = this->declare_parameter<double>("empty_close_threshold", -0.023);
-        gripper_motion_duration_ = this->declare_parameter<double>("gripper_motion_duration", 0.2);  // changed from 0.6
+        gripper_motion_duration_ = this->declare_parameter<double>("gripper_motion_duration", 1.20);
         gripper_settle_time_ = this->declare_parameter<double>("gripper_settle_time", 0.1);
+
+        validateModeAtStartup();
 
         rclcpp::SubscriptionOptions sub_options;
         sub_options.callback_group = pose_callback_group_;
@@ -139,9 +171,18 @@ public:
     }
 
 private:
+    std::string robot_mode_ = "real";
+    bool is_real_robot_ = true;
+    bool sim_clock_block_logged_ = false;
+    // mainLoop runs on a Reentrant timer group under a MultiThreadedExecutor, so a
+    // new tick can fire while a long MoveIt call is in progress. This mutex keeps
+    // mainLoop single-entry (try_lock) instead of relying on the unsynchronised
+    // is_busy_ flag alone.
+    std::mutex main_loop_mutex_;
+
     int sequence_ = 0;
     bool is_busy_ = false;
-    bool nut_pose_received_ = false;
+    std::atomic<bool> nut_pose_received_{false};  // written from poseCallback thread, read in mainLoop
     bool move_group_wait_logged_ = false;
     std::array<float, 4> nut_pose_angle_{};
     std::mutex pose_mutex_;
@@ -149,6 +190,9 @@ private:
     std::string last_launcher_case_;
     std::string last_launcher_detail_;
     size_t last_launcher_picked_count_ = static_cast<size_t>(-1);
+    std::chrono::steady_clock::time_point detection_received_time_{};
+    bool detect_to_pick_timer_active_ = false;
+    double last_detect_to_pick_sec_ = 0.0;
 
     std::string arm_group_name_;
     std::string gripper_group_name_;
@@ -178,7 +222,7 @@ private:
     double gripper_min_position_ = -0.026;
     double gripper_max_position_ = 0.001;
     double empty_close_threshold_ = -0.023;
-    double gripper_motion_duration_ = 0.6;
+    double gripper_motion_duration_ = 1.20;
     double gripper_settle_time_ = 0.1;
 
     std::array<std::array<double, 3>, 3> bin_locations_ = {{
@@ -200,6 +244,69 @@ private:
     std::shared_ptr<moveit::planning_interface::MoveGroupInterface> gripper_group_;
     geometry_msgs::msg::Pose validated_pick_pose_{};
     bool validated_pick_pose_valid_ = false;
+
+    // Returns an empty string when the profile is inside the real-robot envelope.
+    static std::string realRobotLimitViolation(
+        double velocity, double acceleration, double descent_step, double gripper_duration)
+    {
+        using namespace real_robot_limits;
+        char buffer[256];
+        if (velocity > kMaxArmVelocityScaling) {
+            std::snprintf(buffer, sizeof(buffer), "arm_velocity_scaling=%.3f exceeds real-robot max %.2f",
+                          velocity, kMaxArmVelocityScaling);
+            return buffer;
+        }
+        if (acceleration > kMaxArmAccelerationScaling) {
+            std::snprintf(buffer, sizeof(buffer), "arm_acceleration_scaling=%.3f exceeds real-robot max %.2f",
+                          acceleration, kMaxArmAccelerationScaling);
+            return buffer;
+        }
+        if (descent_step > kMaxGraspDescentStep + 1e-9) {
+            std::snprintf(buffer, sizeof(buffer), "grasp_descent_step=%.4f m exceeds real-robot max %.4f m",
+                          descent_step, kMaxGraspDescentStep);
+            return buffer;
+        }
+        if (gripper_duration < kMinGripperMotionDuration - 1e-9) {
+            std::snprintf(buffer, sizeof(buffer), "gripper_motion_duration=%.2f s is below real-robot min %.2f s",
+                          gripper_duration, kMinGripperMotionDuration);
+            return buffer;
+        }
+        return "";
+    }
+
+    void validateModeAtStartup()
+    {
+        const bool use_sim_time = this->get_parameter("use_sim_time").as_bool();
+        if (is_real_robot_ && use_sim_time) {
+            RCLCPP_FATAL(this->get_logger(),
+                         "robot_mode=real with use_sim_time=true is inconsistent. A physical JAKA S12 has no "
+                         "simulator clock. Use robot_mode:=sim for Gazebo.");
+            throw std::runtime_error("robot_mode/use_sim_time mismatch");
+        }
+        if (!is_real_robot_ && !use_sim_time) {
+            RCLCPP_FATAL(this->get_logger(),
+                         "robot_mode=sim requires use_sim_time=true. Refusing to start so simulation motion "
+                         "settings cannot drive hardware.");
+            throw std::runtime_error("robot_mode/use_sim_time mismatch");
+        }
+
+        if (is_real_robot_) {
+            const std::string violation = realRobotLimitViolation(
+                arm_velocity_scaling_, arm_acceleration_scaling_, grasp_descent_step_, gripper_motion_duration_);
+            if (!violation.empty()) {
+                RCLCPP_FATAL(this->get_logger(),
+                             "Refusing to start in robot_mode=real: %s. Simulation presets must not be used "
+                             "on the physical robot.", violation.c_str());
+                throw std::runtime_error("real-robot motion limits violated: " + violation);
+            }
+        }
+
+        RCLCPP_INFO(this->get_logger(),
+                    "robot_mode=%s use_sim_time=%s | velocity=%.2f acceleration=%.2f descent_step=%.4f "
+                    "gripper_motion_duration=%.2f",
+                    robot_mode_.c_str(), use_sim_time ? "true" : "false",
+                    arm_velocity_scaling_, arm_acceleration_scaling_, grasp_descent_step_, gripper_motion_duration_);
+    }
 
     rcl_interfaces::msg::SetParametersResult onParametersChanged(const std::vector<rclcpp::Parameter> &parameters)
     {
@@ -284,6 +391,18 @@ private:
             }
         }
 
+        if (is_real_robot_ && (motion_profile_requested || pick_timing_requested)) {
+            const std::string violation = realRobotLimitViolation(
+                new_arm_velocity_scaling, new_arm_acceleration_scaling,
+                new_grasp_descent_step, new_gripper_motion_duration);
+            if (!violation.empty()) {
+                result.successful = false;
+                result.reason = "Rejected in robot_mode=real: " + violation;
+                RCLCPP_WARN(this->get_logger(), "%s", result.reason.c_str());
+                return result;
+            }
+        }
+
         arm_velocity_scaling_ = new_arm_velocity_scaling;
         arm_acceleration_scaling_ = new_arm_acceleration_scaling;
         grasp_descent_step_ = new_grasp_descent_step;
@@ -324,6 +443,44 @@ private:
         return result;
     }
 
+    void getDetectToPickSnapshot(double &seconds_out, std::string &state_out)
+    {
+        std::lock_guard<std::mutex> lock(pose_mutex_);
+        if (detect_to_pick_timer_active_) {
+            seconds_out = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - detection_received_time_).count();
+            state_out = "running";
+            return;
+        }
+
+        if (last_detect_to_pick_sec_ > 0.0) {
+            seconds_out = last_detect_to_pick_sec_;
+            state_out = "last";
+            return;
+        }
+
+        seconds_out = 0.0;
+        state_out = "idle";
+    }
+
+    void finalizeDetectToPickTimer()
+    {
+        std::lock_guard<std::mutex> lock(pose_mutex_);
+        if (!detect_to_pick_timer_active_) {
+            return;
+        }
+
+        last_detect_to_pick_sec_ = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - detection_received_time_).count();
+        detect_to_pick_timer_active_ = false;
+    }
+
+    void stopDetectToPickTimer()
+    {
+        std::lock_guard<std::mutex> lock(pose_mutex_);
+        detect_to_pick_timer_active_ = false;
+    }
+
     void publishLauncherStatus(const std::string &robot_case, const std::string &detail = "")
     {
         const size_t picked_count = bin_index_;
@@ -336,13 +493,19 @@ private:
         last_launcher_case_ = robot_case;
         last_launcher_detail_ = detail;
         last_launcher_picked_count_ = picked_count;
+        double detect_to_pick_sec = 0.0;
+        std::string detect_to_pick_state;
+        getDetectToPickSnapshot(detect_to_pick_sec, detect_to_pick_state);
 
         RCLCPP_INFO(
             this->get_logger(),
-            "[LAUNCHER_STATUS] robot_case=%s; sequence=%d; picked_count=%zu; detail=%s",
+            "[LAUNCHER_STATUS] robot_case=%s; sequence=%d; picked_count=%zu; pick_time_sec=%.2f; "
+            "pick_timer_state=%s; detail=%s",
             robot_case.c_str(),
             sequence_,
             picked_count,
+            detect_to_pick_sec,
+            detect_to_pick_state.c_str(),
             detail.empty() ? "-" : detail.c_str());
     }
 
@@ -384,6 +547,8 @@ private:
         }
 
         nut_pose_received_ = true;
+        detection_received_time_ = std::chrono::steady_clock::now();
+        detect_to_pick_timer_active_ = true;
         std_msgs::msg::Bool ack;
         ack.data = true;
         pose_received_pub_->publish(ack);
@@ -405,6 +570,7 @@ private:
         is_busy_ = false;
         nut_pose_received_ = false;
         validated_pick_pose_valid_ = false;
+        stopDetectToPickTimer();
         publishLauncherStatus("Request new detection", reason);
         std_msgs::msg::Bool trigger;
         trigger.data = true;
@@ -969,6 +1135,7 @@ private:
         sequence_ = 0;
         is_busy_ = false;
         validated_pick_pose_valid_ = false;
+        stopDetectToPickTimer();
 
         std_msgs::msg::Bool trigger;
         trigger.data = true;
@@ -985,6 +1152,11 @@ private:
 
     void mainLoop()
     {
+        std::unique_lock<std::mutex> loop_lock(main_loop_mutex_, std::try_to_lock);
+        if (!loop_lock.owns_lock()) {
+            return;  // previous tick is still executing a motion sequence
+        }
+
         if (!arm_group_ || !gripper_group_ || is_busy_) {
             if (!arm_group_ || !gripper_group_) {
                 if (!move_group_wait_logged_) {
@@ -997,6 +1169,20 @@ private:
         }
 
         move_group_wait_logged_ = false;
+
+        // Sim-mode interlock: simulation motion settings may only drive a simulator.
+        // Gazebo (ros_gz_bridge) publishes /clock; the JAKA hardware driver does not.
+        if (!is_real_robot_ && this->count_publishers("/clock") == 0) {
+            if (!sim_clock_block_logged_) {
+                publishLauncherStatus("Blocked: no simulator clock", "robot_mode=sim but /clock has no publisher");
+                RCLCPP_ERROR(this->get_logger(),
+                             "robot_mode=sim but no publisher on /clock. Motion is blocked until the "
+                             "Gazebo simulation is running.");
+                sim_clock_block_logged_ = true;
+            }
+            return;
+        }
+        sim_clock_block_logged_ = false;
 
         if (bin_index_ >= bin_locations_.size()) {
             publishLauncherStatus("Completed", "All configured place slots finished");
@@ -1173,6 +1359,7 @@ private:
                     break;
                 }
 
+                finalizeDetectToPickTimer();
                 sequence_ = 4;
                 break;
             }

@@ -1,0 +1,54 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /HandEyeCalibration1
+        - /RobotModel1
+  - Class: rviz_common/Help
+    Name: Help
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Value: true
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Robot Description: robot_description
+      Value: true
+    - Class: moveit_rviz_plugin/HandEyeCalibration
+      Camera FOV Marker: true
+      Marker Alpha: 0.3
+      Marker Size: 1.5
+      Move Group Namespace: ""
+      Name: HandEyeCalibration
+      Planning Scene Topic: /monitored_planning_scene
+      Value: true
+      # NOTE: Do NOT save a planning group here — selecting a group
+      # before move_group is ready causes a blocking service call that
+      # freezes RViz. Set the group in the Control tab AFTER move_group
+      # prints "You can start planning now."
+  Global Options:
+    Fixed Frame: world
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 2.5
+      Focal Point:
+        X: 0.0
+        Y: 0.5
+        Z: 1.0
+      Name: Current View
+      Pitch: 0.6
+      Target Frame: world
+      Yaw: -1.0
+Window Geometry:
+  Height: 975
+  Width: 1400

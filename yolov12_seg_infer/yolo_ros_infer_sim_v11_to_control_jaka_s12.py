@@ -45,6 +45,55 @@ YAW_OFFSET_DEG = float(os.environ.get("YAW_OFFSET_DEG", "0.0"))
 CONTOUR_WORLD_EPSILON = float(os.environ.get("CONTOUR_WORLD_EPSILON", "0.0015"))
 MIN_WORLD_CONTOUR_POINTS = int(os.environ.get("MIN_WORLD_CONTOUR_POINTS", "30"))
 
+# Explicit nut-model selection; must match the AAE server's AAE_NUT_MODEL.
+# No fallback between entries: selecting m6 never loads the legacy model.
+YOLO_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model")
+YOLO_MODEL_REGISTRY = {
+    # YOLOv12n-seg, single class 'nut', trained 2025-11-25 (ultralytics 8.3.232) - this
+    # predates the M6 work and is the detector the legacy M20 AAE pipeline ran with.
+    "m20": "best.pt",
+    # Expected M6 detector. NOT present in the repository/machine as of this change;
+    # copy the trained file here under this name before selecting m6.
+    "m6": "best_m6_yolov26.pt",
+}
+_NUT_MODEL_ENV = os.environ.get("NUT_MODEL")
+NUT_MODEL = (_NUT_MODEL_ENV or "m20").strip().lower()
+
+
+def resolve_yolo_model_path() -> str:
+    if NUT_MODEL not in YOLO_MODEL_REGISTRY:
+        raise SystemExit(f"[YOLO] Unknown NUT_MODEL={NUT_MODEL!r}. Valid values: {sorted(YOLO_MODEL_REGISTRY)}")
+    path = os.path.join(YOLO_MODEL_DIR, YOLO_MODEL_REGISTRY[NUT_MODEL])
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        available = sorted(f for f in os.listdir(YOLO_MODEL_DIR) if f.endswith(".pt")) if os.path.isdir(YOLO_MODEL_DIR) else []
+        raise SystemExit(
+            f"[YOLO] MODEL NOT FOUND for NUT_MODEL={NUT_MODEL}: {path}\n"
+            f"       Available .pt files in {YOLO_MODEL_DIR}: {available or 'none'}\n"
+            "       Refusing to start (no fallback to another nut model)."
+        )
+    return path
+
+
+def check_aae_pairing() -> None:
+    """Refuse to run if the AAE server reports a different nut model than YOLO."""
+    try:
+        response = requests.get(f"{AAE_SERVER_URL}/health", timeout=2.0)
+        info = response.json()
+    except Exception as exc:  # server not up yet (manual start order) - warn, do not block
+        print(f"[YOLO] WARNING: could not query AAE /health at {AAE_SERVER_URL} ({exc}); "
+              f"nut-model pairing NOT verified. Ensure AAE_NUT_MODEL={NUT_MODEL}.")
+        return
+    aae_model = info.get("nut_model")
+    if aae_model is None:
+        print("[YOLO] WARNING: AAE server does not report nut_model (older server); pairing NOT verified.")
+    elif aae_model != NUT_MODEL:
+        raise SystemExit(
+            f"[YOLO] NUT MODEL MISMATCH: YOLO NUT_MODEL={NUT_MODEL} but AAE server reports "
+            f"nut_model={aae_model} ({info.get('experiment')}). Start both with the same model."
+        )
+    else:
+        print(f"[YOLO] Nut-model pairing verified: YOLO={NUT_MODEL}, AAE={aae_model} ({info.get('experiment')}).")
+
 
 class CameraSystem(Node):
     def __init__(self):
@@ -88,12 +137,19 @@ class CameraSystem(Node):
 class NutEstimatorAAE(Node):
     def __init__(self):
         super().__init__("yolo_estimator_node")
-        # Update from Yolov12-seg to Yolov26-seg
-        self.model = YOLO(
-            "/home/ubuntu/6d_pose_estimation/6d_pose_estimation_using_AI_ROS2/"
-            "yolov12_seg_infer/model/best_m6_yolov26.pt"
-        )
+        # Model is chosen explicitly via NUT_MODEL (see YOLO_MODEL_REGISTRY); path validated first.
+        model_path = resolve_yolo_model_path()
+        self.model = YOLO(model_path)
         self.model.to("cpu")
+        if _NUT_MODEL_ENV is None:
+            self.get_logger().warn("NUT_MODEL not set; using 'm20' (previous default behaviour).")
+        train_name = (getattr(self.model, "ckpt", None) or {}).get("train_args", {}).get("name", "unknown")
+        self.get_logger().info(
+            f"YOLO model: nut_model={NUT_MODEL} path={model_path} task={self.model.task} "
+            f"classes={self.model.names} train_run={train_name}"
+        )
+        if self.model.task != "segment":
+            raise SystemExit(f"[YOLO] {model_path} is a '{self.model.task}' model; a segmentation model is required.")
         self.pos_angle_pub = self.create_publisher(Float32MultiArray, "/pos_angle", 10)
         self.create_subscription(Bool, "/pose_received", self.pose_received_cb, 10)
 
@@ -723,6 +779,8 @@ def mouse_callback(event, x, y, flags, camera_node):
 
 
 if __name__ == "__main__":
+    resolve_yolo_model_path()  # fail before ROS/camera setup if the model file is missing
+    check_aae_pairing()
     rclpy.init()
 
     executor = rclpy.executors.MultiThreadedExecutor()

@@ -10,8 +10,63 @@ from launch_ros.substitutions import FindPackageShare
 from launch.actions import SetEnvironmentVariable
     
 
+from launch.actions import OpaqueFunction
+
 from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
+
+
+# Conservative project defaults. Used for BOTH modes unless overridden.
+# robot_mode:=real (default) is what jaka_hardware_bringup/robot_hw.launch.py uses.
+CONSERVATIVE_MOTION_DEFAULTS = {
+    "arm_velocity_scaling": "0.30",
+    "arm_acceleration_scaling": "0.30",
+    "grasp_descent_step": "0.002",
+    "gripper_motion_duration": "1.20",
+}
+
+# Mirror of real_robot_limits in src/bin_picking_node_v5_to_control_jaka_s12.cpp.
+# The C++ node is authoritative (it also rejects live `ros2 param set`); this copy
+# only aborts the launch early with a clear message. Keep both in sync.
+REAL_ROBOT_LIMITS = {
+    "arm_velocity_scaling": ("max", 0.30),
+    "arm_acceleration_scaling": ("max", 0.30),
+    "grasp_descent_step": ("max", 0.002),
+    "gripper_motion_duration": ("min", 1.20),
+}
+
+
+def _validate_robot_mode(context, *args, **kwargs):
+    robot_mode = LaunchConfiguration("robot_mode").perform(context).strip().lower()
+    use_sim_time = LaunchConfiguration("use_sim_time").perform(context).strip().lower() in ("true", "1", "yes")
+
+    if robot_mode not in ("real", "sim"):
+        raise RuntimeError(f"robot_mode must be 'real' or 'sim', got '{robot_mode}'.")
+    if robot_mode == "real" and use_sim_time:
+        raise RuntimeError(
+            "robot_mode:=real with use_sim_time:=true is inconsistent. "
+            "Use robot_mode:=sim use_sim_time:=true for Gazebo."
+        )
+    if robot_mode == "sim" and not use_sim_time:
+        raise RuntimeError("robot_mode:=sim requires use_sim_time:=true.")
+
+    resolved = {name: float(LaunchConfiguration(name).perform(context)) for name in REAL_ROBOT_LIMITS}
+    if robot_mode == "real":
+        for name, (kind, limit) in REAL_ROBOT_LIMITS.items():
+            value = resolved[name]
+            if (kind == "max" and value > limit + 1e-9) or (kind == "min" and value < limit - 1e-9):
+                bound = "max" if kind == "max" else "min"
+                raise RuntimeError(
+                    f"Refusing to launch on the physical JAKA S12: {name}={value} violates real-robot "
+                    f"{bound} {limit}. Fast presets are simulation-only (robot_mode:=sim)."
+                )
+
+    print(
+        f"[run_bin_picking_nodes] robot_mode={robot_mode} use_sim_time={use_sim_time} "
+        + " ".join(f"{k}={v}" for k, v in resolved.items())
+    )
+    return []
+
 
 def generate_launch_description():
     arm_robot_sim_path = get_package_share_directory('jaka_s12_moveit_config')
@@ -29,6 +84,7 @@ def generate_launch_description():
     enable_collision_monitor = LaunchConfiguration("enable_collision_monitor")
     collision_check_period = LaunchConfiguration("collision_check_period")
     use_sim_time = LaunchConfiguration("use_sim_time")
+    robot_mode = LaunchConfiguration("robot_mode")
 
     # -------------------------
     # MoveIt configuration
@@ -57,6 +113,7 @@ def generate_launch_description():
             moveit_config.joint_limits,
             {
                 "use_sim_time": use_sim_time,
+                "robot_mode": robot_mode,
                 "flange_link": "grasp_tcp",
                 "tool_center_offset": 0.019,
                 "grasp_final_offset": 0.0,
@@ -105,15 +162,31 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="false"),
-            DeclareLaunchArgument("arm_velocity_scaling", default_value="0.30"),
-            DeclareLaunchArgument("arm_acceleration_scaling", default_value="0.30"),
-            DeclareLaunchArgument("grasp_descent_step", default_value="0.002"),
-            DeclareLaunchArgument("gripper_motion_duration", default_value="1.20"),
+            DeclareLaunchArgument(
+                "robot_mode",
+                default_value="real",
+                choices=["real", "sim"],
+                description="'real' = physical JAKA S12 (conservative limits enforced). "
+                "'sim' = Gazebo only (requires use_sim_time:=true and a /clock publisher).",
+            ),
+            DeclareLaunchArgument(
+                "arm_velocity_scaling", default_value=CONSERVATIVE_MOTION_DEFAULTS["arm_velocity_scaling"]
+            ),
+            DeclareLaunchArgument(
+                "arm_acceleration_scaling", default_value=CONSERVATIVE_MOTION_DEFAULTS["arm_acceleration_scaling"]
+            ),
+            DeclareLaunchArgument(
+                "grasp_descent_step", default_value=CONSERVATIVE_MOTION_DEFAULTS["grasp_descent_step"]
+            ),
+            DeclareLaunchArgument(
+                "gripper_motion_duration", default_value=CONSERVATIVE_MOTION_DEFAULTS["gripper_motion_duration"]
+            ),
             DeclareLaunchArgument("pick_safe_gap_z", default_value="0.003"),
             DeclareLaunchArgument("detected_nut_height", default_value="0.008"),
             DeclareLaunchArgument("min_grasp_tcp_above_table", default_value="0.020"),
             DeclareLaunchArgument("enable_collision_monitor", default_value="true"),
             DeclareLaunchArgument("collision_check_period", default_value="0.20"),
+            OpaqueFunction(function=_validate_robot_mode),
             move_group_node,
             collision_monitor_node,
         ]
