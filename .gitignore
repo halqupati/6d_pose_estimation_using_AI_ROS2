@@ -54,3 +54,6 @@ aae_infer/autoencoder_ws/tmp_datasets/
 runs/
 nohup.out
 *.tmp
+
+# Rendered simulation videos (large; upload them instead): tools/sim_video_recorder.py
+media_and_files/videos/

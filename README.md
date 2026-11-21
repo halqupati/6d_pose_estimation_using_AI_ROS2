@@ -71,13 +71,17 @@ The world has an empty M20 bolt fixture. Choose the task in the launcher header,
 - **Tighten (bolt)** (`task_mode:=tighten`): a nut already threaded 3 turns above the seat is tightened.
 
 The robot grips the nut, turns it down in strokes (120° by default, `tighten_stroke_deg:=180.0` is
-faster) and stops at the snug torque: 1.5 N·m, measured by a simulated wrist force-torque sensor on
+faster) and stops at the snug torque: 1.0 N·m, measured by a simulated wrist force-torque sensor on
 `/wrist_ft`. `bolt_fixture_manager.py` gives the nut its thread in simulation. It is simulation only.
 Step-by-step notes:
 
 - [docs/tightening/phase0_screw_thread.md](docs/tightening/phase0_screw_thread.md): modelling the thread with a screw joint
 - [docs/tightening/phase1_tighten_nut_on_bolt.md](docs/tightening/phase1_tighten_nut_on_bolt.md): the tightening task, torque measurement and results
 - [docs/tightening/phase2_pick_place_tighten.md](docs/tightening/phase2_pick_place_tighten.md): pick a nut, put it on the bolt, tighten it
+- [docs/tightening/phase3_bolt_detection.md](docs/tightening/phase3_bolt_detection.md): finding the bolt with the depth camera
+
+The bolt position comes from the overhead depth camera (`bolt_detector.py`, `bolt_pose_source:=camera`).
+To record a YouTube-ready video of a run, see [docs/video_recording.md](docs/video_recording.md).
 
 ### Simulation grasp and speed notes (M20)
 
