@@ -1,0 +1,136 @@
+<?xml version="1.0" ?>
+<!--
+  Phase 0 of the nut-tightening work: can Ignition Fortress (gz-sim 6, DART physics)
+  simulate an M20 thread with an SDF "screw" joint?
+
+  Gazebo cannot simulate real thread geometry, so the thread is modelled as a joint:
+  a screw joint couples rotation about the bolt axis to travel along it.
+  M20 coarse thread: pitch p = 2.5 mm per revolution.
+
+  What the first experiment showed (two otherwise identical models):
+    thread_pitch = 0.0025     -> the nut fell ~400 m per radian (1 / 0.0025): WRONG unit.
+    thread_pitch = 2513.2741  -> the nut moved 48.84 mm over 122.76 rad = 2.500 mm/rev.
+  So in Fortress/DART, thread_pitch is in RADIANS PER METRE:
+    thread_pitch = 2*pi / p = 2*pi / 0.0025 = 2513.2741
+  and a POSITIVE thread_pitch with axis +Z moves the nut DOWN for a positive angle
+  (a left-hand thread). Real nuts are right-hand, so the sign is negative here:
+    positive angle (counter-clockwise seen from above) -> nut moves UP   (loosen)
+    negative angle (clockwise seen from above)         -> nut moves DOWN (tighten)
+
+  Scene: an M20 bolt fixed upright on a fixture plate. The nut starts 3 turns
+  (7.5 mm) above the plate; the joint's lower limit is the seat (nut bottom on the plate).
+  tools/screw_thread_test.py drives the thread with a torque and checks:
+    1. self-locking (the nut does not turn under its own weight or a small torque),
+    2. travel per turn and direction,
+    3. the seat stop.
+
+  Physics matches worlds/world.sdf (DART + Bullet collision detector, 1 ms step).
+-->
+<sdf version="1.9">
+  <world name="screw_thread_test">
+
+    <physics name="default_physics" type="dart">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+      <real_time_update_rate>1000</real_time_update_rate>
+      <dart>
+        <collision_detector>bullet</collision_detector>
+      </dart>
+    </physics>
+
+    <!-- Minimum systems: physics, entity/pose queries (scene broadcaster, user commands). -->
+    <plugin filename="ignition-gazebo-physics-system" name="ignition::gazebo::systems::Physics"/>
+    <plugin filename="ignition-gazebo-scene-broadcaster-system" name="ignition::gazebo::systems::SceneBroadcaster"/>
+    <plugin filename="ignition-gazebo-user-commands-system" name="ignition::gazebo::systems::UserCommands"/>
+
+    <gravity>0 0 -9.81</gravity>
+
+    <model name="nut_on_bolt">
+      <pose>0 0 0 0 0 0</pose>
+
+      <!-- Bolt + fixture plate, welded to the world. -->
+      <link name="bolt">
+        <inertial>
+          <mass>0.5</mass>
+          <inertia><ixx>1e-4</ixx><iyy>1e-4</iyy><izz>1e-5</izz></inertia>
+        </inertial>
+        <!-- Fixture plate: 100 x 100 x 20 mm, top face at z = 0.020 (the seat). -->
+        <collision name="plate">
+          <pose>0 0 0.010 0 0 0</pose>
+          <geometry><box><size>0.10 0.10 0.020</size></box></geometry>
+        </collision>
+        <visual name="plate_visual">
+          <pose>0 0 0.010 0 0 0</pose>
+          <geometry><box><size>0.10 0.10 0.020</size></box></geometry>
+        </visual>
+        <!-- M20 shank: 20 mm diameter, 60 mm above the plate. -->
+        <collision name="shank">
+          <pose>0 0 0.050 0 0 0</pose>
+          <geometry><cylinder><radius>0.010</radius><length>0.060</length></cylinder></geometry>
+        </collision>
+        <visual name="shank_visual">
+          <pose>0 0 0.050 0 0 0</pose>
+          <geometry><cylinder><radius>0.010</radius><length>0.060</length></cylinder></geometry>
+        </visual>
+      </link>
+      <joint name="bolt_fixed" type="fixed">
+        <parent>world</parent>
+        <child>bolt</child>
+      </joint>
+
+      <!-- Nut frame at its bottom face (like nut.stl). Start: 3 turns above the seat,
+           z = 0.020 + 3 * 0.0025 = 0.0275. -->
+      <link name="nut">
+        <pose>0 0 0.0275 0 0 0</pose>
+        <inertial>
+          <pose>0 0 0.008 0 0 0</pose>
+          <mass>0.05</mass>
+          <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz></inertia>
+        </inertial>
+        <!-- Same three-box M20 hexagon as worlds/nut/model.sdf (30 mm across flats, 16 mm tall). -->
+        <collision name="flats_90">
+          <pose>0 0 0.008 0 0 0</pose>
+          <geometry><box><size>0.01732 0.030 0.016</size></box></geometry>
+        </collision>
+        <collision name="flats_150">
+          <pose>0 0 0.008 0 0 1.0471975512</pose>
+          <geometry><box><size>0.01732 0.030 0.016</size></box></geometry>
+        </collision>
+        <collision name="flats_30">
+          <pose>0 0 0.008 0 0 2.0943951024</pose>
+          <geometry><box><size>0.01732 0.030 0.016</size></box></geometry>
+        </collision>
+      </link>
+
+      <!-- The thread. Joint angle 0 = start pose.
+           lower = -3 turns = -6*pi = -18.8496 rad: the seat (nut bottom on the plate).
+           upper = +8 turns: the nut leaves the top of the 60 mm shank around +17 turns.
+           Friction makes the thread self-locking and is the running torque the
+           gripper must overcome; the bolt and nut never collide with each other
+           (same model, self-collision off), the joint alone defines their motion. -->
+      <joint name="thread" type="screw">
+        <parent>bolt</parent>
+        <child>nut</child>
+        <thread_pitch>-2513.2741</thread_pitch>
+        <axis>
+          <xyz>0 0 1</xyz>
+          <limit>
+            <lower>-18.8496</lower>
+            <upper>50.2655</upper>
+          </limit>
+          <dynamics>
+            <damping>0.01</damping>
+            <friction>0.05</friction>
+          </dynamics>
+        </axis>
+      </joint>
+
+      <!-- Test I/O: torque on the thread (N*m) and joint-state output. -->
+      <plugin filename="ignition-gazebo-apply-joint-force-system" name="ignition::gazebo::systems::ApplyJointForce">
+        <joint_name>thread</joint_name>
+      </plugin>
+      <plugin filename="ignition-gazebo-joint-state-publisher-system" name="ignition::gazebo::systems::JointStatePublisher"/>
+    </model>
+
+  </world>
+</sdf>
