@@ -29,6 +29,7 @@ controller_manager:
       interfaces:
         - position
         - velocity
+        - effort   # joint_6 torque is used to detect a seated nut while tightening
 
 
 jaka_s12_controller:

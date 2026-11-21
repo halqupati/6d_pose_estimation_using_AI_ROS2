@@ -46,6 +46,7 @@
                     <param name="initial_value">${initial_positions['joint_1']}</param>
                 </state_interface>
                 <state_interface name="velocity"/>
+                <state_interface name="effort"/>  <!-- joint torque/force: used to detect a seated nut while tightening -->
             </joint>
             <joint name="joint_2">
                 <command_interface name="position"/>
@@ -53,6 +54,7 @@
                     <param name="initial_value">${initial_positions['joint_2']}</param>
                 </state_interface>
                 <state_interface name="velocity"/>
+                <state_interface name="effort"/>  <!-- joint torque/force: used to detect a seated nut while tightening -->
             </joint>
             <joint name="joint_3">
                 <command_interface name="position"/>
@@ -60,6 +62,7 @@
                     <param name="initial_value">${initial_positions['joint_3']}</param>
                 </state_interface>
                 <state_interface name="velocity"/>
+                <state_interface name="effort"/>  <!-- joint torque/force: used to detect a seated nut while tightening -->
             </joint>
             <joint name="joint_4">
                 <command_interface name="position"/>
@@ -67,6 +70,7 @@
                     <param name="initial_value">${initial_positions['joint_4']}</param>
                 </state_interface>
                 <state_interface name="velocity"/>
+                <state_interface name="effort"/>  <!-- joint torque/force: used to detect a seated nut while tightening -->
             </joint>
             <joint name="joint_5">
                 <command_interface name="position"/>
@@ -74,6 +78,7 @@
                     <param name="initial_value">${initial_positions['joint_5']}</param>
                 </state_interface>
                 <state_interface name="velocity"/>
+                <state_interface name="effort"/>  <!-- joint torque/force: used to detect a seated nut while tightening -->
             </joint>
             <joint name="joint_6">
                 <command_interface name="position"/>
@@ -81,6 +86,7 @@
                     <param name="initial_value">${initial_positions['joint_6']}</param>
                 </state_interface>
                 <state_interface name="velocity"/>
+                <state_interface name="effort"/>  <!-- joint torque/force: used to detect a seated nut while tightening -->
             </joint>
 
 
@@ -97,6 +103,7 @@
                     <param name="initial_value">0.0</param>
                 </state_interface>
                 <state_interface name="velocity"/>
+                <state_interface name="effort"/>  <!-- joint torque/force: used to detect a seated nut while tightening -->
             </joint>
 
             <!-- jaw_right is exported as a mimic state joint so Gazebo moves it physically -->

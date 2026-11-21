@@ -1,0 +1,122 @@
+<?xml version="1.0"?>
+<!--
+  M20 bolt fixture with a nut already threaded on (tightening task, Phase 1).
+
+  Model frame = table surface under the bolt axis (place it with z = table top).
+    fixture plate : 100 x 100 x 20 mm, top face at z = 0.020  -> the SEAT
+    bolt shank    : M20, 20 mm diameter, top at z = 0.040 (only 4 mm above the seated
+                    nut, so the bolt end stays clear of the gripper's jaw rails, which
+                    sit ~25 mm above the fingertips)
+    nut           : starts 3 turns (7.5 mm) above the seat, bottom face at z = 0.0275
+
+  The thread is the screw joint verified in worlds/tests/screw_thread_test.sdf
+  (see docs/tightening/phase0_screw_thread.md):
+    thread_pitch = -2513.2741 rad/m  -> 2.5 mm per turn, right-hand
+    clockwise seen from above (negative joint angle) = tightening = nut moves down
+    joint lower limit -6*pi rad (3 turns) = nut bottom on the plate (seated)
+    friction 0.05 N*m = self-locking, running torque while turning
+
+  The nut collision is the same three-box M20 hexagon as worlds/nut/model.sdf
+  (corners on +-x, flats facing +-y, +-30 deg, +-150 deg), so the gripper grasps it
+  exactly like a pick-and-place nut (jaws at nut yaw + 30 deg = on two flats).
+  Bolt and nut never collide with each other: same model, self-collision off.
+-->
+<sdf version="1.9">
+  <model name="bolt_m20_with_nut">
+    <static>false</static>
+
+    <link name="bolt">
+      <inertial>
+        <mass>2.0</mass>
+        <inertia><ixx>2e-3</ixx><iyy>2e-3</iyy><izz>3e-3</izz></inertia>
+      </inertial>
+      <collision name="plate">
+        <pose>0 0 0.010 0 0 0</pose>
+        <geometry><box><size>0.10 0.10 0.020</size></box></geometry>
+      </collision>
+      <visual name="plate_visual">
+        <pose>0 0 0.010 0 0 0</pose>
+        <geometry><box><size>0.10 0.10 0.020</size></box></geometry>
+        <material>
+          <ambient>0.20 0.22 0.25 1</ambient>
+          <diffuse>0.35 0.38 0.42 1</diffuse>
+        </material>
+      </visual>
+      <collision name="shank">
+        <pose>0 0 0.030 0 0 0</pose>
+        <geometry><cylinder><radius>0.010</radius><length>0.020</length></cylinder></geometry>
+      </collision>
+      <visual name="shank_visual">
+        <pose>0 0 0.030 0 0 0</pose>
+        <geometry><cylinder><radius>0.010</radius><length>0.020</length></cylinder></geometry>
+        <material>
+          <ambient>0.30 0.30 0.30 1</ambient>
+          <diffuse>0.60 0.60 0.62 1</diffuse>
+        </material>
+      </visual>
+    </link>
+
+    <!-- Weld the fixture to the world (it is clamped to the table). -->
+    <joint name="fixture_fixed" type="fixed">
+      <parent>world</parent>
+      <child>bolt</child>
+    </joint>
+
+    <link name="nut">
+      <pose>0 0 0.0275 0 0 0</pose>
+      <inertial>
+        <pose>0 0 0.008 0 0 0</pose>
+        <mass>0.05</mass>
+        <inertia><ixx>1e-5</ixx><iyy>1e-5</iyy><izz>1e-5</izz></inertia>
+      </inertial>
+      <collision name="flats_90">
+        <pose>0 0 0.008 0 0 0</pose>
+        <geometry><box><size>0.01732 0.030 0.016</size></box></geometry>
+        <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
+      </collision>
+      <collision name="flats_150">
+        <pose>0 0 0.008 0 0 1.0471975512</pose>
+        <geometry><box><size>0.01732 0.030 0.016</size></box></geometry>
+        <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
+      </collision>
+      <collision name="flats_30">
+        <pose>0 0 0.008 0 0 2.0943951024</pose>
+        <geometry><box><size>0.01732 0.030 0.016</size></box></geometry>
+        <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
+      </collision>
+      <visual name="visual">
+        <geometry>
+          <mesh>
+            <uri>model://nut/meshes/nut.stl</uri>
+            <scale>0.001 0.001 0.001</scale>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>0.16 0.17 0.18 1</ambient>
+          <diffuse>0.50 0.53 0.58 1</diffuse>
+          <specular>0.18 0.18 0.18 1</specular>
+        </material>
+      </visual>
+    </link>
+
+    <joint name="thread" type="screw">
+      <parent>bolt</parent>
+      <child>nut</child>
+      <thread_pitch>-2513.2741</thread_pitch>
+      <axis>
+        <xyz>0 0 1</xyz>
+        <limit>
+          <lower>-18.8496</lower>
+          <upper>18.8496</upper>
+        </limit>
+        <dynamics>
+          <damping>0.01</damping>
+          <friction>0.05</friction>
+        </dynamics>
+      </axis>
+    </joint>
+
+    <!-- Publishes the thread angle (ground truth for tests and the launcher, simulation only). -->
+    <plugin filename="ignition-gazebo-joint-state-publisher-system" name="ignition::gazebo::systems::JointStatePublisher"/>
+  </model>
+</sdf>

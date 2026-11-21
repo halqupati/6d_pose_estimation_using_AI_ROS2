@@ -198,6 +198,16 @@ def generate_launch_description():
             "/rgbd_mounted_camera/depth_image@sensor_msgs/msg/Image[ignition.msgs.Image",
             "/rgbd_mounted_camera/camera_info@sensor_msgs/msg/CameraInfo[ignition.msgs.CameraInfo",
             "/rgbd_mounted_camera/points@sensor_msgs/msg/PointCloud2[ignition.msgs.PointCloudPacked",
+
+            # Tightening task (simulation only): thread angle of the nut on the bolt fixture.
+            # Ground truth for tests and the launcher; the robot itself detects a seated nut
+            # from its wrist torque, like a real robot would.
+            "/world/empty_world/model/bolt_fixture/joint_state@sensor_msgs/msg/JointState[ignition.msgs.Model",
+            # Wrist force-torque sensor (flange <-> gripper body). torque.z = tightening torque.
+            "/wrist_ft@geometry_msgs/msg/WrenchStamped[ignition.msgs.Wrench",
+        ],
+        remappings=[
+            ("/world/empty_world/model/bolt_fixture/joint_state", "/bolt_fixture/joint_states"),
         ],
         output="screen",
     )

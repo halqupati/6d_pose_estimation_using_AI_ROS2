@@ -44,6 +44,29 @@
     </joint>
 
     <!-- ============================================================
+         WRIST FORCE-TORQUE SENSOR (Gazebo only)
+         Measures the wrench between the flange and the gripper body. Its torque
+         about the tool axis (body z = grasp_tcp z) is the nut tightening torque.
+         Needed because gz_ros2_control (Humble) reports joint effort as NaN.
+         preserveFixedJoint keeps this fixed joint in the SDF (fixed joints are
+         otherwise merged), so the sensor has a joint to measure. Gazebo also needs
+         the ForceTorque system as a WORLD plugin (see worlds/world.sdf for why).
+         Topic: /wrist_ft (ignition.msgs.Wrench), bridged to ROS as WrenchStamped.
+         ============================================================ -->
+    <gazebo reference="${prefix}gripper_base_to_body_joint">
+      <preserveFixedJoint>true</preserveFixedJoint>
+      <sensor name="wrist_ft" type="force_torque">
+        <always_on>true</always_on>
+        <update_rate>200</update_rate>
+        <topic>/wrist_ft</topic>
+        <force_torque>
+          <frame>child</frame>
+          <measure_direction>child_to_parent</measure_direction>
+        </force_torque>
+      </sensor>
+    </gazebo>
+
+    <!-- ============================================================
          BODY
          ============================================================ -->
     <link name="${prefix}gripper_body_link">
