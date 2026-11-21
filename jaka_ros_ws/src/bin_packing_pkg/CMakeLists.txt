@@ -62,6 +62,7 @@ install(DIRECTORY
 # Simulation helper for the tightening task (gives a nut its thread, see the script docstring).
 install(PROGRAMS
   scripts/bolt_fixture_manager.py
+  scripts/bolt_detector.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

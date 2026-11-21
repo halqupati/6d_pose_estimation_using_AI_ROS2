@@ -39,7 +39,7 @@ REAL_ROBOT_LIMITS = {
 
 # Tightening launch arguments and their defaults (node parameters of the same name).
 TIGHTEN_ARGS = {
-    "tighten_snug_torque": "1.5",       # N*m on the wrist F/T sensor (jaws slip at ~2.6)
+    "tighten_snug_torque": "1.0",       # N*m on the wrist F/T sensor (jaws slip at 1.3-2.8)
     "tighten_stroke_deg": "120.0",      # turn per grip: 60, 120 or 180
     "tighten_max_turns": "4.0",         # safety stop
     "tighten_velocity_scaling": "0.5",  # arm speed while turning the nut
@@ -131,6 +131,7 @@ def generate_launch_description():
                 "use_sim_time": use_sim_time,
                 "robot_mode": robot_mode,
                 "task_mode": task_mode,
+                "bolt_pose_source": LaunchConfiguration("bolt_pose_source"),
                 **tighten_params,
                 "flange_link": "grasp_tcp",
                 "tool_center_offset": 0.019,
@@ -215,6 +216,12 @@ def generate_launch_description():
                 "pick_tighten = pick a nut, put it on the bolt and tighten it (both sim only).",
             ),
             *[DeclareLaunchArgument(name, default_value=default) for name, default in TIGHTEN_ARGS.items()],
+            DeclareLaunchArgument(
+                "bolt_pose_source",
+                default_value="camera",
+                choices=["camera", "parameters"],
+                description="Where the tightening tasks get the bolt pose: bolt_detector (camera) or parameters.",
+            ),
             OpaqueFunction(function=_validate_robot_mode),
             move_group_node,
             collision_monitor_node,

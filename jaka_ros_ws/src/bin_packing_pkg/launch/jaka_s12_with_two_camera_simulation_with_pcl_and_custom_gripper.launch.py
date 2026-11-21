@@ -234,6 +234,16 @@ def generate_launch_description():
         parameters=[{"use_sim_time": True}],
     )
 
+    # Finds the bolt in the overhead depth camera (scripts/bolt_detector.py); the tightening
+    # tasks read /bolt_detector/tip and /bolt_detector/seat instead of fixed parameters.
+    bolt_detector = Node(
+        package="bin_packing_pkg",
+        executable="bolt_detector.py",
+        name="bolt_detector",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument("headless_rendering", default_value="true"),
         gazebo_resource_path,
@@ -248,4 +258,5 @@ def generate_launch_description():
         gz_sim_bridge,
         depth_image_converter,
         bolt_fixture_manager,
+        bolt_detector,
     ])

@@ -12,6 +12,7 @@
 #include <shape_msgs/msg/solid_primitive.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float32_multi_array.hpp>
@@ -119,17 +120,23 @@ public:
         tighten_bolt_y_ = this->declare_parameter<double>("tighten_bolt_y", 0.75);
         tighten_seat_z_ = this->declare_parameter<double>("tighten_seat_z", 0.017);          // plate top [m]
         tighten_bolt_tip_z_ = this->declare_parameter<double>("tighten_bolt_tip_z", 0.037);  // bolt end [m]
-        tighten_nut_bottom_z_ = this->declare_parameter<double>("tighten_nut_bottom_z", 0.0245);  // start [m]
+        // task_mode=tighten: the preloaded nut starts this many turns above the seat
+        // (bolt_fixture_manager preload_turns).
+        tighten_preload_turns_ = this->declare_parameter<double>("tighten_preload_turns", 3.0);
+        // Where the bolt is: "camera" = /bolt_detector (scripts/bolt_detector.py),
+        // "parameters" = the tighten_bolt_* / seat / tip parameters above.
+        bolt_pose_source_ = this->declare_parameter<std::string>("bolt_pose_source", "camera");
         tighten_nut_height_ = this->declare_parameter<double>("tighten_nut_height", 0.016);  // M20 [m]
         tighten_nut_yaw_ = this->declare_parameter<double>("tighten_nut_yaw", 0.0);          // corner axis [rad]
         thread_pitch_ = this->declare_parameter<double>("thread_pitch", 0.0025);             // M20 coarse [m/rev]
         // Turn per grip. A multiple of 60 deg, so after turning back the open jaws meet
         // two flats again; at most 180 deg so the rotation direction is unambiguous.
         tighten_stroke_deg_ = this->declare_parameter<double>("tighten_stroke_deg", 120.0);
-        // Snug threshold, measured on the wrist F/T sensor. 1.5 N*m: ~150x the running torque
-        // (0.01 N*m) and below the ~2.6 N*m at which the parallel jaws slip on a seated M20 nut
-        // (docs/tightening/phase1_tighten_nut_on_bolt.md). 5 N*m is not reachable with this gripper.
-        tighten_snug_torque_ = this->declare_parameter<double>("tighten_snug_torque", 1.5);  // [N*m]
+        // Snug threshold, measured on the wrist F/T sensor. Running torque seen: 0.01-0.21 N*m.
+        // The parallel jaws slip on a seated M20 nut at 1.3-2.8 N*m depending on how squarely
+        // they sit on the flats, so 1.0 N*m is ~5x the running torque and below every slip seen
+        // (docs/tightening/). 5 N*m is not reachable with this gripper.
+        tighten_snug_torque_ = this->declare_parameter<double>("tighten_snug_torque", 1.0);  // [N*m]
         tighten_max_turns_ = this->declare_parameter<double>("tighten_max_turns", 4.0);      // safety stop
         tighten_velocity_scaling_ = this->declare_parameter<double>("tighten_velocity_scaling", 0.5);
         // Fingertip height above the nut's bottom face while gripping, and the distance
@@ -164,6 +171,22 @@ public:
         service_callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
         preload_nut_client_ = this->create_client<std_srvs::srv::Trigger>(
             "/bolt_fixture/preload_nut", rmw_qos_profile_services_default, service_callback_group_);
+        // Bolt detection (camera). Tip and seat arrive as two messages of one detection.
+        bolt_tip_sub_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
+            "/bolt_detector/tip", 10,
+            [this](const geometry_msgs::msg::PointStamped::SharedPtr msg) {
+                std::lock_guard<std::mutex> lock(bolt_mutex_);
+                bolt_tip_detected_ = msg->point;
+            },
+            wrench_options);
+        bolt_seat_sub_ = this->create_subscription<geometry_msgs::msg::PointStamped>(
+            "/bolt_detector/seat", 10,
+            [this](const geometry_msgs::msg::PointStamped::SharedPtr msg) {
+                std::lock_guard<std::mutex> lock(bolt_mutex_);
+                bolt_seat_z_detected_ = msg->point.z;
+                bolt_detected_ = true;
+            },
+            wrench_options);
         engage_nut_client_ = this->create_client<std_srvs::srv::Trigger>(
             "/bolt_fixture/engage_nut", rmw_qos_profile_services_default, service_callback_group_);
 
@@ -286,12 +309,13 @@ private:
     double tighten_bolt_y_ = 0.75;
     double tighten_seat_z_ = 0.017;
     double tighten_bolt_tip_z_ = 0.037;
-    double tighten_nut_bottom_z_ = 0.0245;
+    double tighten_preload_turns_ = 3.0;
+    std::string bolt_pose_source_ = "camera";
     double tighten_nut_height_ = 0.016;
     double tighten_nut_yaw_ = 0.0;
     double thread_pitch_ = 0.0025;
     double tighten_stroke_deg_ = 120.0;
-    double tighten_snug_torque_ = 1.5;
+    double tighten_snug_torque_ = 1.0;
     double tighten_max_turns_ = 4.0;
     double tighten_velocity_scaling_ = 0.5;
     double tighten_finger_clearance_ = 0.003;
@@ -307,6 +331,14 @@ private:
     std::atomic<double> filtered_net_torque_{0.0};  // |torque - baseline|, low-pass filtered
     std::atomic<double> peak_net_torque_{0.0};
     std::atomic<bool> wrist_wrench_received_{false};
+
+    // Latest bolt detection from the camera (bolt_detector.py), base frame.
+    std::mutex bolt_mutex_;
+    bool bolt_detected_ = false;
+    geometry_msgs::msg::Point bolt_tip_detected_{};
+    double bolt_seat_z_detected_ = 0.0;
+    rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr bolt_tip_sub_;
+    rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr bolt_seat_sub_;
 
     std::array<std::array<double, 3>, 3> bin_locations_ = {{
         {0.5, 0.50, 0.05},
@@ -397,6 +429,11 @@ private:
                              "tighten_stroke_deg=%.1f must be 60, 120 or 180 (a multiple of the hexagon's "
                              "60 deg symmetry, at most 180).", tighten_stroke_deg_);
                 throw std::invalid_argument("invalid tighten_stroke_deg");
+            }
+            if (bolt_pose_source_ != "camera" && bolt_pose_source_ != "parameters") {
+                RCLCPP_FATAL(this->get_logger(), "bolt_pose_source must be 'camera' or 'parameters', got '%s'.",
+                             bolt_pose_source_.c_str());
+                throw std::invalid_argument("invalid bolt_pose_source");
             }
             if (tighten_snug_torque_ <= 0.0 || thread_pitch_ <= 0.0 || tighten_max_turns_ <= 0.0) {
                 RCLCPP_FATAL(this->get_logger(), "tighten_snug_torque, thread_pitch and tighten_max_turns must be > 0.");
@@ -1595,17 +1632,62 @@ private:
         return response->success;
     }
 
+    // Where is the bolt? With bolt_pose_source=camera, wait for bolt_detector.py and use its
+    // tip and seat; with "parameters", keep the tighten_bolt_* parameters.
+    bool resolveBoltPose()
+    {
+        if (bolt_pose_source_ == "parameters") {
+            RCLCPP_INFO(this->get_logger(), "Bolt pose from parameters: (%.4f, %.4f) tip %.4f seat %.4f",
+                        tighten_bolt_x_, tighten_bolt_y_, tighten_bolt_tip_z_, tighten_seat_z_);
+            return true;
+        }
+        publishLauncherStatus("Finding the bolt", "Waiting for /bolt_detector (overhead depth camera)");
+        const auto wait_start = std::chrono::steady_clock::now();
+        while (std::chrono::steady_clock::now() - wait_start < std::chrono::seconds(20)) {
+            {
+                std::lock_guard<std::mutex> lock(bolt_mutex_);
+                if (bolt_detected_) {
+                    const double height = bolt_tip_detected_.z - bolt_seat_z_detected_;
+                    if (height < 0.010 || height > 0.060) {
+                        return failTightening(format("implausible bolt detection: tip %.1f mm above the seat",
+                                                     height * 1000.0));
+                    }
+                    tighten_bolt_x_ = bolt_tip_detected_.x;
+                    tighten_bolt_y_ = bolt_tip_detected_.y;
+                    tighten_bolt_tip_z_ = bolt_tip_detected_.z;
+                    tighten_seat_z_ = bolt_seat_z_detected_;
+                    break;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        std::lock_guard<std::mutex> lock(bolt_mutex_);
+        if (!bolt_detected_) {
+            return failTightening("no bolt detection on /bolt_detector after 20 s (is bolt_detector.py running "
+                                  "and the bolt in the overhead camera view?)");
+        }
+        const std::string where = format("(%.4f, %.4f) tip %.4f seat %.4f",
+                                         tighten_bolt_x_, tighten_bolt_y_, tighten_bolt_tip_z_, tighten_seat_z_);
+        RCLCPP_INFO(this->get_logger(), COLOR_CYAN "Bolt detected by the camera at %s" COLOR_RESET, where.c_str());
+        publishLauncherStatus("Bolt detected", where);
+        return true;
+    }
+
     // task_mode = "tighten": a nut is threaded onto the bolt 3 turns above the seat
     // (simulation stand-in for "a nut is already on the bolt"), then tightened.
     bool tightenPreloadedNut()
     {
+        if (!resolveBoltPose()) {  // read the empty bolt before a nut covers its tip
+            return false;
+        }
         publishLauncherStatus("Tightening: preparing bolt", "Threading a nut onto the bolt fixture (simulation)");
         std::string message;
         if (!callTrigger(preload_nut_client_, message)) {
             return failTightening("could not preload a nut on the bolt: " + message);
         }
         RCLCPP_INFO(this->get_logger(), "Bolt fixture: %s", message.c_str());
-        return runTighteningCycle(tighten_nut_bottom_z_, tighten_nut_yaw_, tighten_max_turns_);
+        const double nut_bottom_z = tighten_seat_z_ + tighten_preload_turns_ * thread_pitch_;
+        return runTighteningCycle(nut_bottom_z, tighten_nut_yaw_, tighten_max_turns_);
     }
 
     // task_mode = "pick_tighten", called after the pick sequence lifted the nut:
@@ -1613,6 +1695,9 @@ private:
     // (bolt_fixture_manager swaps in a threaded nut), then tighten it.
     bool placeNutOnBoltAndTighten(double picked_nut_top_z)
     {
+        if (!resolveBoltPose()) {
+            return false;
+        }
         // Where is the nut relative to the TCP? At the grasp, the TCP was at validated_pick_pose_
         // and the nut's bottom face at (detected top - nut height).
         const double tcp_above_nut_bottom =
