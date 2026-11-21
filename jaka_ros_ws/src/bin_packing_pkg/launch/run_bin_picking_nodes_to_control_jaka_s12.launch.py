@@ -150,6 +150,9 @@ def generate_launch_description():
         condition=IfCondition(enable_collision_monitor),
         parameters=[
             moveit_config.robot_description,
+            # The PlanningSceneMonitor needs the SRDF too; without it the node logged
+            # "Could not find parameter robot_description_semantic" and never monitored.
+            moveit_config.robot_description_semantic,
             {
                 "use_sim_time": use_sim_time,
                 "planning_scene_topic": "/monitored_planning_scene",

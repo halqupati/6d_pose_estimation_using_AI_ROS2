@@ -7,7 +7,8 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
+from launch.actions import DeclareLaunchArgument
 from launch_ros.actions import Node, ComposableNodeContainer
 from launch_ros.substitutions import FindPackageShare
 from launch_ros.descriptions import ComposableNode
@@ -172,7 +173,15 @@ def generate_launch_description():
         PythonLaunchDescriptionSource([
             FindPackageShare("ros_gz_sim"), "/launch/gz_sim.launch.py"
         ]),
-        launch_arguments={"gz_args": ["-r -v 4 ", world_path]}.items(),
+        # --headless-rendering makes the *server* render the two RGB-D cameras through
+        # EGL on the NVIDIA GPU instead of the VNC display's software OpenGL (llvmpipe).
+        # The Gazebo GUI still opens normally. Disable with headless_rendering:=false.
+        launch_arguments={"gz_args": [
+            "-r -v 4 ",
+            PythonExpression(["'--headless-rendering ' if '", LaunchConfiguration("headless_rendering"),
+                              "'.lower() == 'true' else ''"]),
+            world_path,
+        ]}.items(),
     )
 
     gz_sim_bridge = Node(
@@ -206,6 +215,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        DeclareLaunchArgument("headless_rendering", default_value="true"),
         gazebo_resource_path,
         robot_state_publisher_node,
         run_move_group_node,

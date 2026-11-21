@@ -39,6 +39,9 @@ STATUS_COLORS = {
     "running": ("#163F2A", "#51D88A", "#D9FBE8"),
     "stopped": ("#5B4A11", "#F4C95D", "#FFF6D9"),
     "warning": ("#5A3010", "#FF9B4A", "#FFE8D6"),
+    # Matching process found, but it was NOT started by this launcher (other terminal,
+    # real-robot bringup, ...). The launcher never pushes live settings into it.
+    "external": ("#14324A", "#60A5FA", "#DBEAFE"),
 }
 
 BG = "#0D1117"
@@ -71,9 +74,28 @@ STARTUP_POLL_INTERVAL_SEC = 0.5
 LAUNCHER_ROBOT_MODE = "sim"
 BIN_PICKING_NODE_NAME = "/bin_picking_node_v5_to_control_jaka_s12"
 
-# Conservative project defaults (same values as the real-robot launch defaults).
-# Faster values are only reachable through the explicit simulation presets below.
-DEFAULT_MOTION_PROFILE = (0.30, 0.30, 0.002, 1.20)
+# Motion presets (velocity, acceleration, descent_step [m], gripper_time [s]).
+# "Safe" equals the real-robot limits enforced by the node in robot_mode=real.
+# The faster presets are SIMULATION presets: this launcher only ever starts the
+# node with robot_mode:=sim, and the node rejects them in robot_mode=real.
+# All were verified end-to-end (grasp, transport, place) in Gazebo.
+# In sim the descent is one Cartesian move, so descent_step only matters on hardware.
+MOTION_PRESETS = {
+    "Safe": (0.30, 0.30, 0.002, 1.20),
+    "Balanced": (0.60, 0.50, 0.004, 1.00),
+    "Fast": (0.90, 0.80, 0.006, 1.00),
+    "Very Fast": (1.00, 1.00, 0.010, 0.60),
+}
+PRESET_COLORS = {
+    "Safe": ("#334155", "#1E293B"),
+    "Balanced": ("#2563EB", "#1D4ED8"),
+    "Fast": ("#7C3AED", "#5B21B6"),
+    "Very Fast": ("#BE123C", "#9F1239"),
+}
+# Explicitly selected simulation preset at startup (shown as "Active preset" in the UI).
+DEFAULT_PRESET = "Fast"
+DEFAULT_MOTION_PROFILE = MOTION_PRESETS[DEFAULT_PRESET]
+GZ_STATS_TOPICS = ("/world/empty_world/stats", "/stats")
 
 # One nut type for the whole perception stack: passed to both AAE and YOLO so they
 # can never be started with mismatched models. "m20" = legacy trained models,
@@ -319,10 +341,22 @@ class ManagedProcess:
         self.stop_state = "stopped"
 
     def is_running(self) -> bool:
-        return (self.process is not None and self.process.poll() is None) or bool(self._external_targets())
+        return self.is_owned_running() or bool(self._external_targets())
 
-    def _external_targets(self) -> dict[int, int]:
-        return find_process_targets(self.config.cleanup_patterns)
+    def is_owned_running(self) -> bool:
+        """True only for a process this launcher started itself."""
+        return self.process is not None and self.process.poll() is None
+
+    def _external_targets(self, max_age_sec: float = 0.5) -> dict[int, int]:
+        # The UI polls is_running() ~10x per 100 ms tick; each call scans all of /proc.
+        # A short cache keeps the launcher light without changing behaviour.
+        now = time.time()
+        cached = getattr(self, "_targets_cache", None)
+        if cached is not None and now - cached[0] < max_age_sec:
+            return dict(cached[1])
+        targets = find_process_targets(self.config.cleanup_patterns)
+        self._targets_cache = (now, targets)
+        return dict(targets)
 
     def start(self, command: str) -> None:
         if self.is_running():
@@ -349,14 +383,14 @@ class ManagedProcess:
         threading.Thread(target=self._read_output, daemon=True).start()
         threading.Thread(target=self._watch_exit, daemon=True).start()
 
-    def stop(self, immediate: bool = False) -> None:
-        if not self.is_running():
+    def stop(self, immediate: bool = False, owned_only: bool = False) -> None:
+        if not (self.is_owned_running() if owned_only else self.is_running()):
             return
 
         self.stop_requested = True
         self.stop_label = "Emergency Stop" if immediate else "Stopped"
         self.stop_state = "warning" if immediate else "stopped"
-        targets = self._external_targets()
+        targets = {} if owned_only else self._external_targets()
 
         if self.process is not None:
             try:
@@ -402,7 +436,9 @@ class ProjectLauncherApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("JAKA S12 Control Deck")
-        self.root.geometry("1520x960")
+        screen_w, screen_h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        self.root.geometry(f"{min(1880, screen_w - 40)}x{min(1040, screen_h - 80)}+20+20")
+        self.root.minsize(1100, 700)
         self.root.configure(bg=BG)
 
         self.log_queue: queue.Queue = queue.Queue()
@@ -441,6 +477,21 @@ class ProjectLauncherApp:
         self.startup_in_progress = False
         self.startup_cancelled = False
 
+        # Dashboard additions: active preset, cycle timing, simulator speed, pipeline pills.
+        self.active_preset_text = tk.StringVar(value=f"Active preset: {DEFAULT_PRESET}")
+        self.preset_buttons: dict[str, tk.Button] = {}
+        self.cycle_time_text = tk.StringVar(value="--")
+        self.cycle_detail_text = tk.StringVar(value="Detect, pick, place, reset.")
+        self.picked_detail_text = tk.StringVar(value="Completed cycles this run.")
+        self.rtf_text = tk.StringVar(value="--")
+        self.rtf_detail_text = tk.StringVar(value="1.0 = real time.")
+        self.cycle_start_time: float | None = None
+        self.cycle_times: list[float] = []
+        self.last_picked_count = 0
+        self.retry_count = 0
+        self.pipeline_pills: dict[str, tuple[tk.Label, str]] = {}
+        self.closing = False
+
         self.process_configs = self._default_configs()
         self.processes: dict[str, ManagedProcess] = {}
         self.command_vars: dict[str, tk.StringVar] = {}
@@ -457,6 +508,47 @@ class ProjectLauncherApp:
 
         self.root.after(100, self._drain_log_queue)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        threading.Thread(target=self._sim_speed_monitor_loop, daemon=True).start()
+
+    def _sim_speed_monitor_loop(self) -> None:
+        """Poll Gazebo's real-time factor every ~2 s while the simulation runs."""
+        while not self.closing:
+            value = None
+            sim = self.processes.get("sim")
+            if sim is not None and sim.is_running():
+                for topic in GZ_STATS_TOPICS:
+                    try:
+                        completed = subprocess.run(
+                            ["ign", "topic", "-e", "-t", topic, "-n", "1"],
+                            capture_output=True, text=True, timeout=3.0, check=False,
+                        )
+                    except (OSError, subprocess.TimeoutExpired):
+                        continue
+                    for line in completed.stdout.splitlines():
+                        if line.strip().startswith("real_time_factor:"):
+                            try:
+                                value = float(line.split(":", 1)[1])
+                            except ValueError:
+                                value = None
+                            break
+                    if value is not None:
+                        break
+            if not self.closing:
+                self.root.after(0, lambda v=value: self._update_sim_speed(v))
+            time.sleep(2.0)
+
+    def _update_sim_speed(self, value: float | None) -> None:
+        if value is None:
+            self.rtf_text.set("--")
+            self.rtf_detail_text.set("Shown while Gazebo runs.")
+            return
+        self.rtf_text.set(f"{value:.2f}x")
+        if value < 0.2:
+            self.rtf_detail_text.set("Much slower than real time.")
+        elif value < 0.6:
+            self.rtf_detail_text.set("Slower than real time.")
+        else:
+            self.rtf_detail_text.set("Near real time.")
 
     def _configure_styles(self) -> None:
         style = ttk.Style(self.root)
@@ -475,11 +567,11 @@ class ProjectLauncherApp:
         style.configure("Treeview", background=PANEL_BG, foreground=TEXT, fieldbackground=PANEL_BG)
 
     def _build_ui(self) -> None:
-        root_frame = tk.Frame(self.root, bg=BG, padx=16, pady=16)
+        root_frame = tk.Frame(self.root, bg=BG, padx=12, pady=10)
         root_frame.pack(fill=tk.BOTH, expand=True)
 
-        header = tk.Frame(root_frame, bg=PANEL_BG, padx=18, pady=16, highlightthickness=1, highlightbackground="#1F2937")
-        header.pack(fill=tk.X, pady=(0, 12))
+        header = tk.Frame(root_frame, bg=PANEL_BG, padx=18, pady=10, highlightthickness=1, highlightbackground="#1F2937")
+        header.pack(fill=tk.X, pady=(0, 6))
 
         title_col = tk.Frame(header, bg=PANEL_BG)
         title_col.pack(side=tk.LEFT, fill=tk.X, expand=True)
@@ -492,11 +584,27 @@ class ProjectLauncherApp:
         ).pack(anchor="w")
         tk.Label(
             title_col,
-            text="Unified launcher, motion profile control, robot status, and emergency stop.",
+            text="Gazebo simulation launcher (robot_mode=sim). The physical robot uses jaka_hardware_bringup.",
             bg=PANEL_BG,
             fg=MUTED,
             font=("TkDefaultFont", 10),
         ).pack(anchor="w", pady=(4, 0))
+
+        pills = tk.Frame(title_col, bg=PANEL_BG)
+        pills.pack(anchor="w", pady=(10, 0))
+        for key, label in (("sim", "Gazebo"), ("bin_picking", "Bin picking"), ("aae", "AAE"), ("yolo", "YOLO")):
+            bg, _, fg = STATUS_COLORS["stopped"]
+            pill = tk.Label(pills, text=f"● {label}: Stopped", bg=bg, fg=fg,
+                            font=("TkDefaultFont", 9, "bold"), padx=10, pady=3)
+            pill.pack(side=tk.LEFT, padx=(0, 6))
+            self.pipeline_pills[key] = (pill, label)
+        tk.Label(
+            pills,
+            text=f"Mode: SIM    Nut model: {NUT_MODEL.upper()}",
+            bg=PANEL_BG,
+            fg="#CBD5E1",
+            font=("TkDefaultFont", 9, "bold"),
+        ).pack(side=tk.LEFT, padx=(10, 0))
 
         button_col = tk.Frame(header, bg=PANEL_BG)
         button_col.pack(side=tk.RIGHT)
@@ -505,7 +613,7 @@ class ProjectLauncherApp:
         self._make_button(button_col, "EMERGENCY STOP", DANGER, DANGER_ACTIVE, self.emergency_stop, width=18).pack(side=tk.LEFT)
 
         info = tk.Frame(root_frame, bg=BG)
-        info.pack(fill=tk.X, pady=(0, 12))
+        info.pack(fill=tk.X, pady=(0, 6))
         conda_text = str(self.conda_exe) if self.conda_exe else "not found"
         tk.Label(
             info,
@@ -550,12 +658,12 @@ class ProjectLauncherApp:
         top_canvas.bind("<Configure>", _resize_controls_width)
 
         dashboard = tk.Frame(controls_content, bg=BG)
-        dashboard.pack(fill=tk.X, pady=(0, 14))
+        dashboard.pack(fill=tk.X, pady=(0, 10))
         dashboard.grid_columnconfigure(0, weight=1)
         dashboard.grid_columnconfigure(1, weight=1)
         dashboard.grid_rowconfigure(1, weight=1)
 
-        status_card = tk.Frame(dashboard, bg=PANEL_BG, padx=18, pady=16, highlightthickness=1, highlightbackground="#1F2937")
+        status_card = tk.Frame(dashboard, bg=PANEL_BG, padx=16, pady=10, highlightthickness=1, highlightbackground="#1F2937")
         status_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         tk.Label(status_card, text="Robot Status", bg=PANEL_BG, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
         self.robot_status_label = tk.Label(
@@ -563,9 +671,9 @@ class ProjectLauncherApp:
             textvariable=self.robot_status_text,
             bg="#5B4A11",
             fg="#FFF6D9",
-            font=("TkDefaultFont", 18, "bold"),
+            font=("TkDefaultFont", 16, "bold"),
             padx=18,
-            pady=10,
+            pady=6,
         )
         self.robot_status_label.pack(anchor="w", pady=(10, 8))
         tk.Label(
@@ -578,24 +686,24 @@ class ProjectLauncherApp:
             font=("TkDefaultFont", 10),
         ).pack(anchor="w")
 
-        motion_card = tk.Frame(dashboard, bg=PANEL_BG, padx=18, pady=16, highlightthickness=1, highlightbackground="#1F2937")
+        motion_card = tk.Frame(dashboard, bg=PANEL_BG, padx=16, pady=10, highlightthickness=1, highlightbackground="#1F2937")
         motion_card.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
         tk.Label(motion_card, text="Motion Profile", bg=PANEL_BG, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
         tk.Label(
             motion_card,
-            text="SIMULATION ONLY (robot_mode=sim). Defaults are the conservative real-robot values; Fast / Very Fast presets are for Gazebo and are rejected by the node on the physical JAKA S12. Sequence 2 is usually limited most by pick descent step, and sequence 3 by gripper time.",
+            text="Simulation presets. Safe = real-robot limits; faster presets are rejected by the node in robot_mode=real.",
             bg=PANEL_BG,
             fg=TEXT,
-            wraplength=520,
+            wraplength=560,
             justify=tk.LEFT,
-            font=("TkDefaultFont", 10),
-        ).pack(anchor="w", pady=(6, 12))
+            font=("TkDefaultFont", 9),
+        ).pack(anchor="w", pady=(4, 8))
 
         self._build_slider_row(motion_card, "Velocity", self.velocity_var, self.velocity_text)
         self._build_slider_row(motion_card, "Acceleration", self.acceleration_var, self.acceleration_text)
         self._build_slider_row(
             motion_card,
-            "Pick Descent",
+            "Descent step*",
             self.grasp_descent_step_var,
             self.grasp_descent_step_text,
             from_=0.001,
@@ -612,63 +720,71 @@ class ProjectLauncherApp:
             resolution=0.05,
         )
 
+        tk.Label(
+            motion_card,
+            text="* Descent step only affects the physical robot; in simulation the final descent is one smooth move.",
+            bg=PANEL_BG,
+            fg=MUTED,
+            font=("TkDefaultFont", 8),
+        ).pack(anchor="w", pady=(2, 0))
+
         preset_row = tk.Frame(motion_card, bg=PANEL_BG)
-        preset_row.pack(fill=tk.X, pady=(10, 0))
-        self._make_button(
-            preset_row,
-            "Safe",
-            "#334155",
-            "#1E293B",
-            lambda: self.set_motion_profile(0.35, 0.25, 0.003, 0.40),
-            width=10,
-        ).pack(side=tk.LEFT)
-        self._make_button(
-            preset_row,
-            "Balanced",
-            "#2563EB",
-            "#1D4ED8",
-            lambda: self.set_motion_profile(0.70, 0.50, 0.006, 0.25),
-            width=10,
-        ).pack(side=tk.LEFT, padx=(8, 0))
-        self._make_button(
-            preset_row,
-            "Fast",
-            "#7C3AED",
-            "#5B21B6",
-            lambda: self.set_motion_profile(0.90, 0.80, 0.012, 0.10),
-            width=10,
-        ).pack(side=tk.LEFT, padx=(8, 0))
-        self._make_button(
-            preset_row,
-            "Very Fast",
-            "#BE123C",
-            "#9F1239",
-            lambda: self.set_motion_profile(1.00, 1.00, 0.018, 0.05),
-            width=10,
-        ).pack(side=tk.LEFT, padx=(8, 0))
-        self._make_button(preset_row, "Apply Live", START, START_ACTIVE, self.apply_motion_profile, width=12).pack(side=tk.RIGHT)
+        preset_row.pack(fill=tk.X, pady=(8, 0))
+        for index, name in enumerate(MOTION_PRESETS):
+            bg, active_bg = PRESET_COLORS[name]
+            button = self._make_button(
+                preset_row, name, bg, active_bg,
+                lambda preset=name: self.set_motion_profile(*MOTION_PRESETS[preset]),
+                width=9,
+            )
+            button.pack(side=tk.LEFT, padx=(0 if index == 0 else 6, 0))
+            self.preset_buttons[name] = button
+        self._make_button(preset_row, "Apply Live", START, START_ACTIVE, self.apply_motion_profile, width=11).pack(side=tk.RIGHT)
+        tk.Label(
+            motion_card,
+            textvariable=self.active_preset_text,
+            bg=PANEL_BG,
+            fg="#C4B5FD",
+            font=("TkDefaultFont", 9, "bold"),
+        ).pack(anchor="w", pady=(6, 0))
 
-        telemetry_card = tk.Frame(dashboard, bg=PANEL_BG, padx=18, pady=16, highlightthickness=1, highlightbackground="#1F2937")
-        telemetry_card.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
-        telemetry_card.grid_columnconfigure(0, weight=1)
-        telemetry_card.grid_columnconfigure(1, weight=1)
-        telemetry_card.grid_columnconfigure(2, weight=1)
-        telemetry_card.grid_columnconfigure(3, weight=2)
-        telemetry_card.grid_columnconfigure(4, weight=1)
-
+        # Live telemetry: one compact row of tiles so everything fits on short (e.g. 1920x884 VNC) screens.
+        telemetry_card = tk.Frame(dashboard, bg=PANEL_BG, padx=14, pady=10, highlightthickness=1, highlightbackground="#1F2937")
+        telemetry_card.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
         tk.Label(
             telemetry_card,
             text="Live Telemetry",
             bg=PANEL_BG,
             fg=MUTED,
             font=("TkDefaultFont", 10, "bold"),
-        ).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 12))
+        ).grid(row=0, column=0, columnspan=7, sticky="w", pady=(0, 6))
 
-        collision_box = tk.Frame(telemetry_card, bg=PANEL_ALT, padx=14, pady=12, highlightthickness=1, highlightbackground="#1F2937")
-        collision_box.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
-        tk.Label(collision_box, text="Collision", bg=PANEL_ALT, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
+        tiles = (
+            # (column, title, value variable, detail variable, value colour, column weight)
+            (0, "Current Case", self.robot_case_text, self.robot_case_detail_text, "#F8FAFC", 3),
+            (1, "Picked Nuts", self.picked_count_text, self.picked_detail_text, "#F8FAFC", 2),
+            (2, "Cycle Time", self.cycle_time_text, self.cycle_detail_text, "#F8FAFC", 2),
+            (3, "Detect -> Pick", self.pick_time_text, self.pick_time_detail_text, "#F8FAFC", 2),
+            (4, "Sim Speed", self.rtf_text, self.rtf_detail_text, "#F8FAFC", 2),
+            (6, "Errors", self.error_count_text, None, "#FCA5A5", 2),
+        )
+        for column, title, value_var, detail_var, colour, weight in tiles:
+            telemetry_card.grid_columnconfigure(column, weight=weight, uniform="tiles")
+            tile = self._build_tile(telemetry_card, column, title)
+            tk.Label(tile, textvariable=value_var, bg=PANEL_ALT, fg=colour,
+                     wraplength=260 if column == 0 else 0, justify=tk.LEFT,
+                     font=("TkDefaultFont", 13 if column == 0 else 18, "bold")).pack(anchor="w", pady=(4, 2))
+            if detail_var is not None:
+                tk.Label(tile, textvariable=detail_var, bg=PANEL_ALT, fg=TEXT, wraplength=170 if column else 300,
+                         justify=tk.LEFT, font=("TkDefaultFont", 8)).pack(anchor="w")
+            else:
+                tk.Label(tile, text="Warnings and failures.", bg=PANEL_ALT, fg=TEXT,
+                         font=("TkDefaultFont", 8)).pack(anchor="w")
+
+        telemetry_card.grid_columnconfigure(5, weight=2, uniform="tiles")
+        collision_box = self._build_tile(telemetry_card, 5, "Collision")
         collision_row = tk.Frame(collision_box, bg=PANEL_ALT)
-        collision_row.pack(anchor="w", pady=(8, 4))
+        collision_row.pack(anchor="w", pady=(6, 2))
         self.collision_indicator_canvas = tk.Canvas(
             collision_row,
             width=18,
@@ -684,101 +800,19 @@ class ProjectLauncherApp:
             textvariable=self.collision_status_text,
             bg=PANEL_ALT,
             fg=TEXT,
-            font=("TkDefaultFont", 14, "bold"),
+            font=("TkDefaultFont", 13, "bold"),
         ).pack(side=tk.LEFT)
         tk.Label(
             collision_box,
             textvariable=self.collision_detail_text,
             bg=PANEL_ALT,
             fg=TEXT,
-            wraplength=250,
+            wraplength=210,
             justify=tk.LEFT,
-            font=("TkDefaultFont", 9),
+            font=("TkDefaultFont", 8),
         ).pack(anchor="w")
 
-        picked_box = tk.Frame(telemetry_card, bg=PANEL_ALT, padx=14, pady=12, highlightthickness=1, highlightbackground="#1F2937")
-        picked_box.grid(row=1, column=1, sticky="nsew", padx=8)
-        tk.Label(picked_box, text="Picked Nuts", bg=PANEL_ALT, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
-        tk.Label(
-            picked_box,
-            textvariable=self.picked_count_text,
-            bg=PANEL_ALT,
-            fg="#F8FAFC",
-            font=("TkDefaultFont", 26, "bold"),
-        ).pack(anchor="w", pady=(10, 4))
-        tk.Label(
-            picked_box,
-            text="Completed pick-and-place cycles in this launcher run.",
-            bg=PANEL_ALT,
-            fg=TEXT,
-            wraplength=220,
-            justify=tk.LEFT,
-            font=("TkDefaultFont", 9),
-        ).pack(anchor="w")
-
-        pick_time_box = tk.Frame(telemetry_card, bg=PANEL_ALT, padx=14, pady=12, highlightthickness=1, highlightbackground="#1F2937")
-        pick_time_box.grid(row=1, column=2, sticky="nsew", padx=8)
-        tk.Label(pick_time_box, text="Detect -> Pick", bg=PANEL_ALT, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
-        tk.Label(
-            pick_time_box,
-            textvariable=self.pick_time_text,
-            bg=PANEL_ALT,
-            fg="#F8FAFC",
-            font=("TkDefaultFont", 24, "bold"),
-        ).pack(anchor="w", pady=(10, 4))
-        tk.Label(
-            pick_time_box,
-            textvariable=self.pick_time_detail_text,
-            bg=PANEL_ALT,
-            fg=TEXT,
-            wraplength=220,
-            justify=tk.LEFT,
-            font=("TkDefaultFont", 9),
-        ).pack(anchor="w")
-
-        case_box = tk.Frame(telemetry_card, bg=PANEL_ALT, padx=14, pady=12, highlightthickness=1, highlightbackground="#1F2937")
-        case_box.grid(row=1, column=3, sticky="nsew", padx=8)
-        tk.Label(case_box, text="Current Case", bg=PANEL_ALT, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
-        tk.Label(
-            case_box,
-            textvariable=self.robot_case_text,
-            bg=PANEL_ALT,
-            fg="#F8FAFC",
-            wraplength=360,
-            justify=tk.LEFT,
-            font=("TkDefaultFont", 15, "bold"),
-        ).pack(anchor="w", pady=(10, 4))
-        tk.Label(
-            case_box,
-            textvariable=self.robot_case_detail_text,
-            bg=PANEL_ALT,
-            fg=TEXT,
-            wraplength=360,
-            justify=tk.LEFT,
-            font=("TkDefaultFont", 9),
-        ).pack(anchor="w")
-
-        errors_box = tk.Frame(telemetry_card, bg=PANEL_ALT, padx=14, pady=12, highlightthickness=1, highlightbackground="#1F2937")
-        errors_box.grid(row=1, column=4, sticky="nsew", padx=(8, 0))
-        tk.Label(errors_box, text="Errors", bg=PANEL_ALT, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w")
-        tk.Label(
-            errors_box,
-            textvariable=self.error_count_text,
-            bg=PANEL_ALT,
-            fg="#FCA5A5",
-            font=("TkDefaultFont", 26, "bold"),
-        ).pack(anchor="w", pady=(10, 4))
-        tk.Label(
-            errors_box,
-            text="Warnings, failures, collision alerts, and tracebacks.",
-            bg=PANEL_ALT,
-            fg=TEXT,
-            wraplength=220,
-            justify=tk.LEFT,
-            font=("TkDefaultFont", 9),
-        ).pack(anchor="w")
-
-        process_card = tk.Frame(controls_content, bg=PANEL_BG, padx=18, pady=16, highlightthickness=1, highlightbackground="#1F2937")
+        process_card = tk.Frame(controls_content, bg=PANEL_BG, padx=16, pady=10, highlightthickness=1, highlightbackground="#1F2937")
         process_card.pack(fill=tk.X, pady=(0, 14))
         tk.Label(process_card, text="Processes", bg=PANEL_BG, fg=MUTED, font=("TkDefaultFont", 10, "bold")).pack(anchor="w", pady=(0, 10))
 
@@ -883,7 +917,18 @@ class ProjectLauncherApp:
             self.log_widgets[config.key] = log_widget
 
         self._update_collision_indicator()
-        self.root.after(0, lambda: main_pane.sashpos(0, max(420, int(self.root.winfo_height() * 0.64))))
+
+        def _place_sash() -> None:
+            # winfo_height() is 1 until the window is mapped; the old after(0) call therefore
+            # always fell back to 420 px and clipped the presets and the whole telemetry row.
+            self.root.update_idletasks()
+            pane_height = main_pane.winfo_height()
+            if pane_height < 200:
+                self.root.after(100, _place_sash)
+                return
+            main_pane.sashpos(0, int(pane_height * 0.70))
+
+        self.root.after(150, _place_sash)
 
     def _build_slider_row(
         self,
@@ -916,6 +961,12 @@ class ProjectLauncherApp:
         )
         scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 12))
         tk.Label(row, textvariable=text_var, bg=PANEL_BG, fg="#F8FAFC", width=6, anchor="e", font=("TkDefaultFont", 10, "bold")).pack(side=tk.RIGHT)
+
+    def _build_tile(self, parent: tk.Widget, column: int, title: str) -> tk.Frame:
+        tile = tk.Frame(parent, bg=PANEL_ALT, padx=10, pady=8, highlightthickness=1, highlightbackground="#1F2937")
+        tile.grid(row=1, column=column, sticky="nsew", padx=(0 if column == 0 else 6, 0))
+        tk.Label(tile, text=title, bg=PANEL_ALT, fg=MUTED, font=("TkDefaultFont", 9, "bold")).pack(anchor="w")
+        return tile
 
     def _make_button(self, parent: tk.Widget, text: str, bg: str, active_bg: str, command, width: int = 10) -> tk.Button:
         return tk.Button(
@@ -958,6 +1009,13 @@ class ProjectLauncherApp:
         self.pick_time_detail_text.set("Waiting for first detected nut pose.")
         self.robot_case_text.set("Starting")
         self.robot_case_detail_text.set("Bin-picking process launch requested.")
+        self.cycle_start_time = None
+        self.cycle_times = []
+        self.last_picked_count = 0
+        self.retry_count = 0
+        self.cycle_time_text.set("--")
+        self.cycle_detail_text.set("Detect, pick, place, reset.")
+        self.picked_detail_text.set("Completed cycles this run.")
         self._update_collision_indicator()
 
     def _set_bin_picking_offline(self) -> None:
@@ -1031,8 +1089,30 @@ class ProjectLauncherApp:
             elif key == "bin_picking":
                 self.robot_case_detail_text.set("Launcher status update received.")
 
+        robot_case = fields.get("robot_case", "")
+        if robot_case.startswith("Sequence 0") and self.cycle_start_time is None:
+            self.cycle_start_time = time.time()  # retries stay inside the same cycle
+        if robot_case == "Request new detection":
+            self.retry_count += 1
+
         if "picked_count" in fields:
             self.picked_count_text.set(fields["picked_count"])
+            try:
+                picked = int(fields["picked_count"])
+            except ValueError:
+                picked = self.last_picked_count
+            if picked > self.last_picked_count and self.cycle_start_time is not None:
+                self.cycle_times.append(time.time() - self.cycle_start_time)
+                self.cycle_start_time = None
+                average = sum(self.cycle_times) / len(self.cycle_times)
+                self.cycle_time_text.set(f"{self.cycle_times[-1]:.1f}s")
+                self.cycle_detail_text.set(
+                    f"Last cycle. Avg {average:.1f}s ({len(self.cycle_times)} cycles)."
+                )
+            self.last_picked_count = picked
+            self.picked_detail_text.set(
+                f"Completed. Retries: {self.retry_count}."
+            )
 
         if "pick_time_sec" in fields or "pick_timer_state" in fields:
             pick_time_state = fields.get("pick_timer_state", "").strip()
@@ -1324,6 +1404,20 @@ class ProjectLauncherApp:
         self.acceleration_text.set(f"{self.acceleration_var.get():.2f}")
         self.grasp_descent_step_text.set(f"{self.grasp_descent_step_var.get():.4f}")
         self.gripper_motion_duration_text.set(f"{self.gripper_motion_duration_var.get():.2f}")
+        current = (
+            self.velocity_var.get(),
+            self.acceleration_var.get(),
+            self.grasp_descent_step_var.get(),
+            self.gripper_motion_duration_var.get(),
+        )
+        active = next(
+            (name for name, values in MOTION_PRESETS.items()
+             if all(abs(a - b) < 1e-6 for a, b in zip(current, values))),
+            None,
+        )
+        self.active_preset_text.set(f"Active preset: {active}" if active else "Active preset: Custom (sliders)")
+        for name, button in self.preset_buttons.items():
+            button.configure(relief=tk.SUNKEN if name == active else tk.FLAT, bd=3 if name == active else 0)
         if hasattr(self, "command_vars") and "bin_picking" in self.command_vars:
             self._refresh_dynamic_commands()
         self._recompute_robot_status()
@@ -1507,10 +1601,15 @@ class ProjectLauncherApp:
         self.process_states[key] = state
         bg, _, fg = STATUS_COLORS[state]
         self.process_status_labels[key].configure(bg=bg, fg=fg)
+        if key in self.pipeline_pills:
+            pill, label = self.pipeline_pills[key]
+            pill.configure(text=f"● {label}: {text}", bg=bg, fg=fg)
 
     def _recompute_robot_status(self) -> None:
+        core_owned = all(self.processes.get(key) and self.processes[key].is_owned_running() for key in CORE_PROCESS_KEYS)
         core_running = all(self.processes.get(key) and self.processes[key].is_running() for key in CORE_PROCESS_KEYS)
         any_running = any(process.is_running() for process in self.processes.values())
+        any_owned = any(process.is_owned_running() for process in self.processes.values())
         any_warning_state = any(self.process_states.get(key) == "warning" for key in CORE_PROCESS_KEYS)
         warning_active = (
             self.emergency_latched or
@@ -1529,13 +1628,29 @@ class ProjectLauncherApp:
                 )
             else:
                 detail = self.warning_message or "Operator attention required."
-        elif core_running:
+        elif core_owned:
             state = "running"
             text = "Running"
             detail = (
                 f"Simulation and bin-picking are active. Case: {self.robot_case_text.get()}. "
-                f"Picked nuts: {self.picked_count_text.get()}. Motion profile: velocity={self.velocity_var.get():.2f}, "
-                f"acceleration={self.acceleration_var.get():.2f}. AAE port={self.aae_port}."
+                f"Picked nuts: {self.picked_count_text.get()}. {self.active_preset_text.get()} "
+                f"(velocity={self.velocity_var.get():.2f}, acceleration={self.acceleration_var.get():.2f}). "
+                f"AAE port={self.aae_port}."
+            )
+        elif any_running and not any_owned:
+            state = "external"
+            text = "External"
+            detail = (
+                "Matching ROS/Gazebo processes are running that this launcher did not start "
+                "(another terminal or the real-robot bringup). Live controls are not applied to them. "
+                "Stop All will terminate them."
+            )
+        elif core_running:
+            state = "running"
+            text = "Running"
+            detail = (
+                "Simulation and bin-picking are active (partly started outside this launcher). "
+                f"Case: {self.robot_case_text.get()}. Picked nuts: {self.picked_count_text.get()}."
             )
         elif any_running:
             state = "warning"
@@ -1577,19 +1692,34 @@ class ProjectLauncherApp:
 
     def _sync_process_statuses(self) -> None:
         for key, process in self.processes.items():
-            if process.is_running():
-                if self.process_states.get(key) != "running":
+            state = self.process_states.get(key)
+            if process.is_owned_running():
+                if state != "running":
                     self._set_process_status(key, "Running", "running")
-            elif self.process_states.get(key) == "running":
+            elif process.is_running():
+                if state != "external":
+                    self._set_process_status(key, "External", "external")
+            elif state in ("running", "external"):
                 self._set_process_status(key, "Stopped", "stopped")
 
         if not self.processes["bin_picking"].is_running():
             self._set_bin_picking_offline()
 
     def _on_close(self) -> None:
-        running = [key for key, process in self.processes.items() if process.is_running()]
-        if running:
-            self.stop_all()
+        # Closing the window stops only what this launcher started. Use "Stop All" to also
+        # clean up matching processes started elsewhere.
+        self.closing = True
+        self.startup_cancelled = True
+        # Synchronous: stop() works in daemon threads that would die with the window,
+        # leaving the (setsid) children orphaned.
+        for key in ("yolo", "aae", "bin_picking", "sim"):
+            process = self.processes[key].process
+            if process is None or process.poll() is not None:
+                continue
+            try:
+                terminate_process_targets({process.pid: os.getpgid(process.pid)}, immediate=False, timeout_sec=3.0)
+            except ProcessLookupError:
+                pass
         self.root.destroy()
 
 

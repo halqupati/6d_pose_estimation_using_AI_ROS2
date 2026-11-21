@@ -18,14 +18,18 @@
         </inertia>
       </inertial>
       
-      <!-- Use the real nut mesh for collision so the gripper contacts the
-           flats and top surface instead of a rough solid cylinder. -->
-      <collision name="collision">
+      <!-- Collision = exact DIN 934 M20 hexagonal prism built from three convex boxes:
+           a regular hexagon is the union of three 30 mm (across flats) x 17.32 mm (edge
+           length) rectangles rotated 0/60/120 deg; 16 mm tall, bottom at z = 0, matching
+           nut.stl (corners on +-x, flats normal to +-y, +-30 deg, +-150 deg).
+           Why not the mesh: Bullet cannot collide two triangle meshes and FCL mesh contact
+           was sparse, so the nut slipped. Why not a cylinder: pad-vs-cylinder is a single
+           contact line per jaw, the nut pivoted ~10 deg and fell during transport.
+           Box faces give face-to-face pad contact on the flats. Visual keeps the mesh. -->
+      <collision name="collision_flats_90">
+        <pose>0 0 0.008 0 0 0</pose>
         <geometry>
-          <mesh>
-            <uri>model://nut/meshes/nut.stl</uri>
-            <scale>0.001 0.001 0.001</scale>
-          </mesh>
+          <box><size>0.01732 0.030 0.016</size></box>
         </geometry>
         <surface>
           <contact>
@@ -47,9 +51,29 @@
           </friction>
         </surface>
       </collision>
-      
-      <!-- Keep visual and collision on the same mesh/origin. Also avoid the
-           Collada 1.5 warning by using STL instead of the invalid DAE file. -->
+      <collision name="collision_flats_150">
+        <pose>0 0 0.008 0 0 1.0471975512</pose>
+        <geometry>
+          <box><size>0.01732 0.030 0.016</size></box>
+        </geometry>
+        <surface>
+          <contact><ode><kp>10000000</kp><kd>1</kd><max_vel>0.01</max_vel><min_depth>0.001</min_depth></ode></contact>
+          <friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction>
+        </surface>
+      </collision>
+      <collision name="collision_flats_30">
+        <pose>0 0 0.008 0 0 2.0943951024</pose>
+        <geometry>
+          <box><size>0.01732 0.030 0.016</size></box>
+        </geometry>
+        <surface>
+          <contact><ode><kp>10000000</kp><kd>1</kd><max_vel>0.01</max_vel><min_depth>0.001</min_depth></ode></contact>
+          <friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction>
+        </surface>
+      </collision>
+
+      <!-- Visual keeps the real mesh. Use STL instead of the invalid DAE file
+           to avoid the Collada 1.5 warning. -->
       <visual name="visual">
         <cast_shadows>true</cast_shadows>
         <transparency>0.0</transparency>

@@ -105,13 +105,22 @@
           <color rgba="0.25 0.25 0.25 1.0"/>
         </material>
       </visual>
-      <!-- Use the jaw mesh for contact. The previous box approximation
-           overlapped the opposite finger and produced invalid contact. -->
-      <collision>
-        <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+      <!-- Collision = two convex boxes fitted to jaw_left.STL (measured from the mesh):
+           finger pad x 24.5..33.5 mm, y +-5.5 mm, z 24.0..49.0 mm (the only part that
+           touches the nut), and the rail block x -7.0..37.0, y -14.0..5.5, z 4.0..23.9 mm.
+           Mesh-vs-mesh contact was the grasp failure: with Bullet it never registers,
+           with FCL it is sparse/jittery and the nut slips. The pad box does not reach
+           the opposite pad until q = -0.0245 (49 mm open gap), unlike the old single box. -->
+      <collision name="jaw_left_pad">
+        <origin xyz="0.0290 0.0 0.0365" rpy="0.0 0.0 0.0"/>
         <geometry>
-          <mesh filename="package://custom_gripper_pkg/meshes/jaw_left.STL"
-                scale="0.001 0.001 0.001"/>
+          <box size="0.0090 0.0110 0.0250"/>
+        </geometry>
+      </collision>
+      <collision name="jaw_left_rail">
+        <origin xyz="0.0150 -0.00425 0.01395" rpy="0.0 0.0 0.0"/>
+        <geometry>
+          <box size="0.0440 0.0195 0.0199"/>
         </geometry>
       </collision>
     </link>
@@ -155,11 +164,17 @@
         </geometry>
         <material name="gripper_dark"/>
       </visual>
-      <collision>
-        <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+      <!-- Mirror of the left jaw boxes (fitted to jaw_right.STL). -->
+      <collision name="jaw_right_pad">
+        <origin xyz="-0.0290 0.0 0.0365" rpy="0.0 0.0 0.0"/>
         <geometry>
-          <mesh filename="package://custom_gripper_pkg/meshes/jaw_right.STL"
-                scale="0.001 0.001 0.001"/>
+          <box size="0.0090 0.0110 0.0250"/>
+        </geometry>
+      </collision>
+      <collision name="jaw_right_rail">
+        <origin xyz="-0.0150 0.00425 0.01395" rpy="0.0 0.0 0.0"/>
+        <geometry>
+          <box size="0.0440 0.0195 0.0199"/>
         </geometry>
       </collision>
     </link>

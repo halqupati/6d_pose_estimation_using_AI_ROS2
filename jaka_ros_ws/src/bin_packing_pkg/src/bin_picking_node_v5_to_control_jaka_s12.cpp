@@ -102,6 +102,8 @@ public:
         empty_close_threshold_ = this->declare_parameter<double>("empty_close_threshold", -0.023);
         gripper_motion_duration_ = this->declare_parameter<double>("gripper_motion_duration", 1.20);
         gripper_settle_time_ = this->declare_parameter<double>("gripper_settle_time", 0.1);
+        // Added to the perception yaw (hex edge direction) so the jaws close on flats.
+        grasp_yaw_offset_ = this->declare_parameter<double>("grasp_yaw_offset", PI / 6.0);
 
         validateModeAtStartup();
 
@@ -224,6 +226,7 @@ private:
     double empty_close_threshold_ = -0.023;
     double gripper_motion_duration_ = 1.20;
     double gripper_settle_time_ = 0.1;
+    double grasp_yaw_offset_ = PI / 6.0;
 
     std::array<std::array<double, 3>, 3> bin_locations_ = {{
         {0.5, 0.50, 0.05},
@@ -559,6 +562,10 @@ private:
     {
         std::lock_guard<std::mutex> lock(pose_mutex_);
         local_nut = nut_pose_angle_;
+        // local_nut[3] becomes the GRIPPER yaw: the jaws close along the tool x axis,
+        // while the perception yaw is the hexagon edge direction (= corner-to-corner
+        // axis). +30 deg puts the jaws on two opposite flats instead of two corners.
+        local_nut[3] = static_cast<float>(local_nut[3] + grasp_yaw_offset_);
         return std::isfinite(local_nut[0]) && std::isfinite(local_nut[1]) &&
                std::isfinite(local_nut[2]) && std::isfinite(local_nut[3]);
     }
@@ -634,6 +641,46 @@ private:
         }
         pose_out = arm_group_->getCurrentPose(flange_link_name_).pose;
         return true;
+    }
+
+    // Like isCurrentPoseNearTarget, but tolerates joint-state lag right after a trajectory
+    // finishes (pronounced when Gazebo runs below real time): polls for up to timeout_sec and
+    // logs the remaining error if the pose never converges. Intermittent "Pick pose validation
+    // failed" resets were seen both in earlier runs and in testing with a fully executed path.
+    bool waitUntilPoseNearTarget(
+        const geometry_msgs::msg::Pose &target,
+        double xy_tol,
+        double z_tol,
+        double timeout_sec = 1.5)
+    {
+        const auto start = std::chrono::steady_clock::now();
+        while (true) {
+            if (isCurrentPoseNearTarget(target, xy_tol, z_tol)) {
+                return true;
+            }
+            if (std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() >= timeout_sec) {
+                break;
+            }
+            (void)waitForRobotState(0.1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+
+        geometry_msgs::msg::Pose current;
+        if (getCurrentArmPose(current)) {
+            tf2::Quaternion q_cur, q_tgt;
+            tf2::fromMsg(current.orientation, q_cur);
+            tf2::fromMsg(target.orientation, q_tgt);
+            RCLCPP_WARN(
+                this->get_logger(),
+                "Pose did not converge in %.1f s: xy_err=%.4f (tol %.4f) z_err=%.4f (tol %.4f) ang_err=%.3f rad",
+                timeout_sec,
+                std::hypot(current.position.x - target.position.x, current.position.y - target.position.y),
+                xy_tol,
+                std::abs(current.position.z - target.position.z),
+                z_tol,
+                q_cur.normalized().angleShortestPath(q_tgt.normalized()));
+        }
+        return false;
     }
 
     bool isCurrentPoseNearTarget(
@@ -771,14 +818,30 @@ private:
         }
 
         arm_group_->setStartStateToCurrentState();
-        arm_group_->setPoseTarget(target, flange_link_name_);
-
         moveit::planning_interface::MoveGroupInterface::Plan plan;
-        const auto plan_result = arm_group_->plan(plan);
-        arm_group_->clearPoseTargets();
-        if (plan_result != moveit::core::MoveItErrorCode::SUCCESS) {
-            RCLCPP_WARN(this->get_logger(), "Pose planning failed.");
-            return false;
+
+        // Preferred: IK seeded from the CURRENT joint state, then plan to that joint goal.
+        // A plain pose goal lets MoveIt pick any IK branch (elbow/wrist flip), and OMPL then
+        // swings the arm (and the held nut) through large random arcs (observed: nut carried
+        // up to z=2.2 m and through y=-1.06 m on the way to the place slot).
+        bool planned = false;
+        if (const auto current_state = arm_group_->getCurrentState(1.0)) {
+            arm_group_->setJointValueTarget(*current_state);  // seed for the IK below
+            if (arm_group_->setJointValueTarget(target, flange_link_name_)) {
+                planned = (arm_group_->plan(plan) == moveit::core::MoveItErrorCode::SUCCESS);
+            }
+        }
+
+        if (!planned) {
+            RCLCPP_WARN(this->get_logger(), "Seeded-IK joint goal unavailable; falling back to pose-goal planning.");
+            arm_group_->setStartStateToCurrentState();
+            arm_group_->setPoseTarget(target, flange_link_name_);
+            const auto plan_result = arm_group_->plan(plan);
+            arm_group_->clearPoseTargets();
+            if (plan_result != moveit::core::MoveItErrorCode::SUCCESS) {
+                RCLCPP_WARN(this->get_logger(), "Pose planning failed.");
+                return false;
+            }
         }
 
         return executeTimedTrajectory(
@@ -879,6 +942,14 @@ private:
         const double dz = target.position.z - start_pose.position.z;
         if (std::abs(dz) < 1e-4) {
             return true;
+        }
+
+        if (!is_real_robot_) {
+            // Simulation: computeCartesianPath already interpolates the straight line
+            // (5 mm eef_step), so one trajectory gives the same path without the per-step
+            // start/stop overhead (~26 + 10 separate executions per pick before).
+            // The physical robot keeps the conservative stepped descent below.
+            return moveCartesianPose(target, min_fraction, avoid_collisions);
         }
 
         const double effective_step = std::max(0.001, std::abs(step_size));
@@ -1318,7 +1389,7 @@ private:
                     break;
                 }
 
-                if (!isCurrentPoseNearTarget(pick_pose, pick_xy_tolerance_, pick_z_tolerance_)) {
+                if (!waitUntilPoseNearTarget(pick_pose, pick_xy_tolerance_, pick_z_tolerance_)) {
                     requestNewDetection("Pick pose validation failed after descent");
                     break;
                 }
@@ -1337,7 +1408,7 @@ private:
                     requestNewDetection("Validated pick pose is unavailable before close");
                     break;
                 }
-                if (!isCurrentPoseNearTarget(validated_pick_pose_, pick_xy_tolerance_, pick_z_tolerance_)) {
+                if (!waitUntilPoseNearTarget(validated_pick_pose_, pick_xy_tolerance_, pick_z_tolerance_)) {
                     requestNewDetection("Robot drifted away from validated pick pose before close");
                     break;
                 }

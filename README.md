@@ -52,6 +52,30 @@ The launcher starts and stops:
 
 The command fields stay editable in the GUI, so if you want to switch the first launch to `..._uder_test.launch.py`, you can change it there without editing the script.
 
+Launcher dashboard:
+- Header pills show each process: `Running` (started by the launcher), `External` (a matching process
+  started elsewhere; the launcher never pushes live settings into it), `Stopped`.
+- Motion presets (simulation only): `Safe` = real-robot limits, `Balanced`, `Fast` (selected at start),
+  `Very Fast`. `Apply Live` changes the running sim node.
+- Telemetry: current case, picked nuts and retries, last and average cycle time, detect-to-pick time,
+  Gazebo real-time factor ("Sim Speed"), collision monitor, error count.
+- Closing the window stops only processes the launcher started; `Stop All` also stops matching
+  processes started elsewhere.
+
+### Simulation grasp and speed notes (M20)
+
+- Contact surfaces use primitive shapes: the nut collision is an exact hexagonal prism made of
+  three boxes, and the jaws use box pads. The world uses DART with the Bullet collision detector,
+  and robot links collide with convex hulls (`tools/make_convex_collision_meshes.py`). With mesh
+  collisions the jaws passed through the nut (Bullet) or the nut slipped (FCL), and Gazebo ran at
+  about 0.07x real time.
+- The node adds `grasp_yaw_offset` (default 30 deg) to the perception yaw so the jaws close on two
+  flats rather than two corners.
+- In `robot_mode:=sim` each vertical approach and descent is one Cartesian move. The physical robot
+  keeps the stepped 2 mm descent.
+- The sim launch renders the cameras on the GPU with `--headless-rendering`. Turn it off with
+  `headless_rendering:=false` if your machine has no EGL-capable GPU.
+
 
 
 
