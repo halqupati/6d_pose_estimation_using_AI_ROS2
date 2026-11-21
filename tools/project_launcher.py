@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import math
 import os
 import queue
 import shlex
@@ -96,6 +97,14 @@ PRESET_COLORS = {
 DEFAULT_PRESET = "Fast"
 DEFAULT_MOTION_PROFILE = MOTION_PRESETS[DEFAULT_PRESET]
 GZ_STATS_TOPICS = ("/world/empty_world/stats", "/stats")
+
+# Tasks the bin-picking node can run (its task_mode launch argument).
+TASK_MODES = {"Pick & place": "pick_place", "Tighten (bolt)": "tighten"}
+# Simulator ground truth of the bolt fixture's thread (worlds/bolt_m20), shown in the
+# "Bolt Thread" tile. The robot itself never uses this; it detects snug from wrist torque.
+BOLT_JOINT_STATE_TOPIC = "/world/empty_world/model/bolt_fixture/joint_state"
+THREAD_PITCH_M = 0.0025              # M20 coarse thread
+BOLT_START_TURNS_ABOVE_SEAT = 3.0    # the fixture nut starts 3 turns above the plate
 
 # One nut type for the whole perception stack: passed to both AAE and YOLO so they
 # can never be started with mismatched models. "m20" = legacy trained models,
@@ -491,6 +500,9 @@ class ProjectLauncherApp:
         self.retry_count = 0
         self.pipeline_pills: dict[str, tuple[tk.Label, str]] = {}
         self.closing = False
+        self.task_label_var = tk.StringVar(value="Pick & place")
+        self.bolt_text = tk.StringVar(value="--")
+        self.bolt_detail_text = tk.StringVar(value="Sim ground truth (bolt fixture).")
 
         self.process_configs = self._default_configs()
         self.processes: dict[str, ManagedProcess] = {}
@@ -533,9 +545,53 @@ class ProjectLauncherApp:
                             break
                     if value is not None:
                         break
+            thread_angle = self._read_bolt_thread_angle() if (sim is not None and sim.is_running()) else None
             if not self.closing:
                 self.root.after(0, lambda v=value: self._update_sim_speed(v))
+                self.root.after(0, lambda a=thread_angle: self._update_bolt_thread(a))
             time.sleep(2.0)
+
+    @staticmethod
+    def _read_bolt_thread_angle() -> float | None:
+        """Thread joint angle of the bolt fixture nut [rad] from Gazebo (None if unavailable)."""
+        try:
+            completed = subprocess.run(
+                ["ign", "topic", "-e", "-t", BOLT_JOINT_STATE_TOPIC, "-n", "1"],
+                capture_output=True, text=True, timeout=3.0, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if 'name: "thread"' not in completed.stdout:
+            return None
+        section = completed.stdout.split('name: "thread"', 1)[1]
+        for line in section.splitlines():
+            if line.strip().startswith("position:"):
+                try:
+                    return float(line.split(":", 1)[1])
+                except ValueError:
+                    return None
+        return 0.0  # protobuf text output omits a field that is exactly zero
+
+    def _update_bolt_thread(self, angle: float | None) -> None:
+        if angle is None:
+            self.bolt_text.set("--")
+            self.bolt_detail_text.set("Sim ground truth (bolt fixture).")
+            return
+        turns = -angle / (2.0 * math.pi)  # clockwise (negative angle) = tightening
+        gap_mm = max(0.0, (BOLT_START_TURNS_ABOVE_SEAT - turns) * THREAD_PITCH_M * 1000.0)
+        self.bolt_text.set(f"{turns:.2f} turns")
+        self.bolt_detail_text.set("Seated on the plate (sim truth)." if gap_mm < 0.05
+                                  else f"{gap_mm:.1f} mm above the seat (sim truth).")
+
+    def _on_task_changed(self) -> None:
+        self._refresh_dynamic_commands()
+        task = self.task_label_var.get()
+        running = self.processes.get("bin_picking") and self.processes["bin_picking"].is_owned_running()
+        self._append_launcher_log(
+            "bin_picking",
+            f"Task set to '{task}' (task_mode={TASK_MODES[task]})"
+            + (". Restart Bin Picking Nodes to apply it." if running else "; used at the next start."),
+        )
 
     def _update_sim_speed(self, value: float | None) -> None:
         if value is None:
@@ -600,11 +656,16 @@ class ProjectLauncherApp:
             self.pipeline_pills[key] = (pill, label)
         tk.Label(
             pills,
-            text=f"Mode: SIM    Nut model: {NUT_MODEL.upper()}",
+            text=f"Mode: SIM    Nut model: {NUT_MODEL.upper()}    Task:",
             bg=PANEL_BG,
             fg="#CBD5E1",
             font=("TkDefaultFont", 9, "bold"),
-        ).pack(side=tk.LEFT, padx=(10, 0))
+        ).pack(side=tk.LEFT, padx=(10, 4))
+        # Task selector: passed to the bin-picking node as task_mode at its next start.
+        task_box = ttk.Combobox(pills, textvariable=self.task_label_var, values=list(TASK_MODES),
+                                state="readonly", width=14)
+        task_box.pack(side=tk.LEFT)
+        task_box.bind("<<ComboboxSelected>>", lambda _event: self._on_task_changed())
 
         button_col = tk.Frame(header, bg=PANEL_BG)
         button_col.pack(side=tk.RIGHT)
@@ -757,7 +818,7 @@ class ProjectLauncherApp:
             bg=PANEL_BG,
             fg=MUTED,
             font=("TkDefaultFont", 10, "bold"),
-        ).grid(row=0, column=0, columnspan=7, sticky="w", pady=(0, 6))
+        ).grid(row=0, column=0, columnspan=8, sticky="w", pady=(0, 6))
 
         tiles = (
             # (column, title, value variable, detail variable, value colour, column weight)
@@ -767,6 +828,7 @@ class ProjectLauncherApp:
             (3, "Detect -> Pick", self.pick_time_text, self.pick_time_detail_text, "#F8FAFC", 2),
             (4, "Sim Speed", self.rtf_text, self.rtf_detail_text, "#F8FAFC", 2),
             (6, "Errors", self.error_count_text, None, "#FCA5A5", 2),
+            (7, "Bolt Thread", self.bolt_text, self.bolt_detail_text, "#F8FAFC", 2),
         )
         for column, title, value_var, detail_var, colour, weight in tiles:
             telemetry_card.grid_columnconfigure(column, weight=weight, uniform="tiles")
@@ -1207,6 +1269,7 @@ class ProjectLauncherApp:
             {
                 "use_sim_time": "true",
                 "robot_mode": LAUNCHER_ROBOT_MODE,
+                "task_mode": TASK_MODES[self.task_label_var.get()],
                 "arm_velocity_scaling": f"{self.velocity_var.get():.2f}",
                 "arm_acceleration_scaling": f"{self.acceleration_var.get():.2f}",
                 "grasp_descent_step": f"{self.grasp_descent_step_var.get():.4f}",

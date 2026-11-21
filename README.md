@@ -62,6 +62,17 @@ Launcher dashboard:
 - Closing the window stops only processes the launcher started; `Stop All` also stops matching
   processes started elsewhere.
 
+### Nut tightening in simulation
+
+The world has an M20 bolt fixture with a nut threaded on, 3 turns above its seat. Choose
+**Task: Tighten (bolt)** in the launcher, or launch the bin-picking nodes with `task_mode:=tighten`.
+The robot grips the nut, turns it down in 120° strokes and stops at the snug torque (1.5 N·m
+measured by a simulated wrist force-torque sensor on `/wrist_ft`). It is simulation only.
+Step-by-step notes:
+
+- [docs/tightening/phase0_screw_thread.md](docs/tightening/phase0_screw_thread.md): modelling the thread with a screw joint
+- [docs/tightening/phase1_tighten_nut_on_bolt.md](docs/tightening/phase1_tighten_nut_on_bolt.md): the tightening task, torque measurement and results
+
 ### Simulation grasp and speed notes (M20)
 
 - Contact surfaces use primitive shapes: the nut collision is an exact hexagonal prism made of
