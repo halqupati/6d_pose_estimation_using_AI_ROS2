@@ -64,14 +64,20 @@ Launcher dashboard:
 
 ### Nut tightening in simulation
 
-The world has an M20 bolt fixture with a nut threaded on, 3 turns above its seat. Choose
-**Task: Tighten (bolt)** in the launcher, or launch the bin-picking nodes with `task_mode:=tighten`.
-The robot grips the nut, turns it down in 120° strokes and stops at the snug torque (1.5 N·m
-measured by a simulated wrist force-torque sensor on `/wrist_ft`). It is simulation only.
+The world has an empty M20 bolt fixture. Choose the task in the launcher header, or pass
+`task_mode` to the bin-picking launch:
+
+- **Pick + tighten** (`task_mode:=pick_tighten`): pick a nut, set it on the bolt tip, and tighten it.
+- **Tighten (bolt)** (`task_mode:=tighten`): a nut already threaded 3 turns above the seat is tightened.
+
+The robot grips the nut, turns it down in strokes (120° by default, `tighten_stroke_deg:=180.0` is
+faster) and stops at the snug torque: 1.5 N·m, measured by a simulated wrist force-torque sensor on
+`/wrist_ft`. `bolt_fixture_manager.py` gives the nut its thread in simulation. It is simulation only.
 Step-by-step notes:
 
 - [docs/tightening/phase0_screw_thread.md](docs/tightening/phase0_screw_thread.md): modelling the thread with a screw joint
 - [docs/tightening/phase1_tighten_nut_on_bolt.md](docs/tightening/phase1_tighten_nut_on_bolt.md): the tightening task, torque measurement and results
+- [docs/tightening/phase2_pick_place_tighten.md](docs/tightening/phase2_pick_place_tighten.md): pick a nut, put it on the bolt, tighten it
 
 ### Simulation grasp and speed notes (M20)
 

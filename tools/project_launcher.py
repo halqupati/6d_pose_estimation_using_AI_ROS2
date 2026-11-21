@@ -98,13 +98,27 @@ DEFAULT_PRESET = "Fast"
 DEFAULT_MOTION_PROFILE = MOTION_PRESETS[DEFAULT_PRESET]
 GZ_STATS_TOPICS = ("/world/empty_world/stats", "/stats")
 
+# Processes the cleanup matcher must never stop, even if their command line contains a
+# process pattern (see find_process_targets). Compared with the executable's basename.
+NON_TARGET_EXECUTABLES = {
+    "bash", "sh", "dash", "zsh", "fish", "sudo", "timeout", "nohup", "env",
+    "cc1plus", "cc1", "c++", "g++", "gcc", "clang", "clang++", "ld", "collect2", "as",
+    "make", "gmake", "cmake", "ninja", "colcon", "ccache",
+    "grep", "egrep", "rg", "ugrep", "sed", "awk", "tail", "head", "less", "cat", "find",
+    "vim", "nvim", "nano", "emacs", "code", "codium", "git", "ps", "pgrep", "pkill",
+}
+
 # Tasks the bin-picking node can run (its task_mode launch argument).
-TASK_MODES = {"Pick & place": "pick_place", "Tighten (bolt)": "tighten"}
+TASK_MODES = {
+    "Pick & place": "pick_place",
+    "Tighten (bolt)": "tighten",          # a nut already threaded on the bolt
+    "Pick + tighten": "pick_tighten",     # pick a nut, put it on the bolt, tighten it
+}
 # Simulator ground truth of the bolt fixture's thread (worlds/bolt_m20), shown in the
 # "Bolt Thread" tile. The robot itself never uses this; it detects snug from wrist torque.
 BOLT_JOINT_STATE_TOPIC = "/world/empty_world/model/bolt_fixture/joint_state"
-THREAD_PITCH_M = 0.0025              # M20 coarse thread
-BOLT_START_TURNS_ABOVE_SEAT = 3.0    # the fixture nut starts 3 turns above the plate
+BOLT_FIXTURE_MODEL = "bolt_fixture"
+BOLT_SEAT_Z = 0.020                  # plate top in the fixture frame (worlds/bolt_m20)
 
 # One nut type for the whole perception stack: passed to both AAE and YOLO so they
 # can never be started with mismatched models. "m20" = legacy trained models,
@@ -282,6 +296,13 @@ def find_process_targets(patterns: tuple[str, ...]) -> dict[int, int]:
     targets: dict[int, int] = {}
     for pid, pgid, args in _iter_process_rows():
         if pid == current_pid or "project_launcher.py" in args:
+            continue
+        # Never match tools that merely mention a pattern in their arguments: compiling
+        # bin_picking_node_v5_to_control_jaka_s12.cpp, grepping for it, editing it or a
+        # shell running such a command. (A launcher-started bash wrapper is still stopped:
+        # its children match by themselves and the whole process group is terminated.)
+        executable = os.path.basename(args.split(None, 1)[0])
+        if executable in NON_TARGET_EXECUTABLES:
             continue
         if any(pattern in args for pattern in patterns):
             targets[pid] = pgid
@@ -545,43 +566,51 @@ class ProjectLauncherApp:
                             break
                     if value is not None:
                         break
-            thread_angle = self._read_bolt_thread_angle() if (sim is not None and sim.is_running()) else None
+            bolt_state = self._read_bolt_state() if (sim is not None and sim.is_running()) else None
             if not self.closing:
                 self.root.after(0, lambda v=value: self._update_sim_speed(v))
-                self.root.after(0, lambda a=thread_angle: self._update_bolt_thread(a))
+                self.root.after(0, lambda s=bolt_state: self._update_bolt_thread(s))
             time.sleep(2.0)
 
     @staticmethod
-    def _read_bolt_thread_angle() -> float | None:
-        """Thread joint angle of the bolt fixture nut [rad] from Gazebo (None if unavailable)."""
+    def _read_bolt_state() -> tuple[float, float] | str | None:
+        """Bolt fixture ground truth from Gazebo: (turns tightened, nut gap to the seat [m]),
+        "empty" if the bolt has no nut, or None if unavailable."""
         try:
-            completed = subprocess.run(
-                ["ign", "topic", "-e", "-t", BOLT_JOINT_STATE_TOPIC, "-n", "1"],
-                capture_output=True, text=True, timeout=3.0, check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
+            model = subprocess.run(["ign", "model", "-m", BOLT_FIXTURE_MODEL, "-l", "nut"],
+                                   capture_output=True, text=True, timeout=3.0, check=False).stdout
+            if "Name: nut" not in model:
+                return "empty" if "Name: bolt" in subprocess.run(
+                    ["ign", "model", "-m", BOLT_FIXTURE_MODEL, "-l", "bolt"],
+                    capture_output=True, text=True, timeout=3.0, check=False).stdout else None
+            lines = model.splitlines()
+            index = next(i for i, line in enumerate(lines) if line.strip().startswith("- Pose ["))
+            nut_bottom = float(lines[index + 1].strip(" []").split()[2])  # in the fixture frame
+            joints = subprocess.run(["ign", "topic", "-e", "-t", BOLT_JOINT_STATE_TOPIC, "-n", "1"],
+                                    capture_output=True, text=True, timeout=3.0, check=False).stdout
+        except (OSError, subprocess.TimeoutExpired, StopIteration, ValueError, IndexError):
             return None
-        if 'name: "thread"' not in completed.stdout:
-            return None
-        section = completed.stdout.split('name: "thread"', 1)[1]
-        for line in section.splitlines():
-            if line.strip().startswith("position:"):
-                try:
-                    return float(line.split(":", 1)[1])
-                except ValueError:
-                    return None
-        return 0.0  # protobuf text output omits a field that is exactly zero
+        angle = 0.0  # protobuf text output omits a field that is exactly zero
+        if 'name: "thread"' in joints:
+            for line in joints.split('name: "thread"', 1)[1].splitlines():
+                if line.strip().startswith("position:"):
+                    angle = float(line.split(":", 1)[1])
+                    break
+        return -angle / (2.0 * math.pi), nut_bottom - BOLT_SEAT_Z  # clockwise = tightening
 
-    def _update_bolt_thread(self, angle: float | None) -> None:
-        if angle is None:
+    def _update_bolt_thread(self, state: tuple[float, float] | str | None) -> None:
+        if state is None:
             self.bolt_text.set("--")
             self.bolt_detail_text.set("Sim ground truth (bolt fixture).")
             return
-        turns = -angle / (2.0 * math.pi)  # clockwise (negative angle) = tightening
-        gap_mm = max(0.0, (BOLT_START_TURNS_ABOVE_SEAT - turns) * THREAD_PITCH_M * 1000.0)
+        if state == "empty":
+            self.bolt_text.set("No nut")
+            self.bolt_detail_text.set("Bolt is empty (sim truth).")
+            return
+        turns, gap = state
         self.bolt_text.set(f"{turns:.2f} turns")
-        self.bolt_detail_text.set("Seated on the plate (sim truth)." if gap_mm < 0.05
-                                  else f"{gap_mm:.1f} mm above the seat (sim truth).")
+        self.bolt_detail_text.set("Seated on the plate (sim truth)." if gap < 5e-5
+                                  else f"{gap * 1000:.1f} mm above the seat (sim truth).")
 
     def _on_task_changed(self) -> None:
         self._refresh_dynamic_commands()
