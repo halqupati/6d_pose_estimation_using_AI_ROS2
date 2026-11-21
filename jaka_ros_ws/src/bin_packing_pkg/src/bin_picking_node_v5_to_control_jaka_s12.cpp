@@ -12,6 +12,7 @@
 #include <shape_msgs/msg/solid_primitive.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float32_multi_array.hpp>
 
@@ -20,6 +21,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <mutex>
 #include <stdexcept>
@@ -105,6 +107,34 @@ public:
         // Added to the perception yaw (hex edge direction) so the jaws close on flats.
         grasp_yaw_offset_ = this->declare_parameter<double>("grasp_yaw_offset", PI / 6.0);
 
+        // ---------------- Nut tightening task (task_mode = "tighten") ----------------
+        // "pick_place" = the original bin-picking cycle; "tighten" = run a nut that is
+        // already on a bolt down to a snug torque (docs/tightening/).
+        task_mode_ = this->declare_parameter<std::string>("task_mode", "pick_place");
+        // Bolt axis and nut, in the robot base frame. Defaults = worlds/bolt_m20 fixture
+        // at world (-0.30, 0.75) on the table (z offset: base frame is 1.018 m below world).
+        tighten_bolt_x_ = this->declare_parameter<double>("tighten_bolt_x", -0.30);
+        tighten_bolt_y_ = this->declare_parameter<double>("tighten_bolt_y", 0.75);
+        tighten_seat_z_ = this->declare_parameter<double>("tighten_seat_z", 0.017);          // plate top [m]
+        tighten_nut_bottom_z_ = this->declare_parameter<double>("tighten_nut_bottom_z", 0.0245);  // start [m]
+        tighten_nut_height_ = this->declare_parameter<double>("tighten_nut_height", 0.016);  // M20 [m]
+        tighten_nut_yaw_ = this->declare_parameter<double>("tighten_nut_yaw", 0.0);          // corner axis [rad]
+        thread_pitch_ = this->declare_parameter<double>("thread_pitch", 0.0025);             // M20 coarse [m/rev]
+        // Turn per grip. A multiple of 60 deg, so after turning back the open jaws meet
+        // two flats again; at most 180 deg so the rotation direction is unambiguous.
+        tighten_stroke_deg_ = this->declare_parameter<double>("tighten_stroke_deg", 120.0);
+        // Snug threshold, measured on the wrist F/T sensor. 1.5 N*m: ~150x the running torque
+        // (0.01 N*m) and below the ~2.6 N*m at which the parallel jaws slip on a seated M20 nut
+        // (docs/tightening/phase1_tighten_nut_on_bolt.md). 5 N*m is not reachable with this gripper.
+        tighten_snug_torque_ = this->declare_parameter<double>("tighten_snug_torque", 1.5);  // [N*m]
+        tighten_max_turns_ = this->declare_parameter<double>("tighten_max_turns", 4.0);      // safety stop
+        tighten_velocity_scaling_ = this->declare_parameter<double>("tighten_velocity_scaling", 0.5);
+        // Fingertip height above the nut's bottom face while gripping, and the distance
+        // from grasp_tcp down to the fingertips (jaw pads end 22.5 mm below grasp_tcp).
+        tighten_finger_clearance_ = this->declare_parameter<double>("tighten_finger_clearance", 0.003);
+        jaw_tip_offset_ = this->declare_parameter<double>("jaw_tip_offset", 0.0225);
+        wrist_ft_topic_ = this->declare_parameter<std::string>("wrist_ft_topic", "/wrist_ft");
+
         validateModeAtStartup();
 
         rclcpp::SubscriptionOptions sub_options;
@@ -114,6 +144,17 @@ public:
             10,
             std::bind(&ControlRobot::poseCallback, this, std::placeholders::_1),
             sub_options);
+
+        // Wrist force-torque sensor. Own callback group so the torque monitor keeps running
+        // (and can stop the arm) while mainLoop is blocked executing a turning stroke.
+        wrench_callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+        rclcpp::SubscriptionOptions wrench_options;
+        wrench_options.callback_group = wrench_callback_group_;
+        wrist_wrench_sub_ = this->create_subscription<geometry_msgs::msg::WrenchStamped>(
+            wrist_ft_topic_,
+            rclcpp::SensorDataQoS(),
+            std::bind(&ControlRobot::onWristWrench, this, std::placeholders::_1),
+            wrench_options);
 
         trigger_pub_ = this->create_publisher<std_msgs::msg::Bool>("/trigger", 10);
         pose_received_pub_ = this->create_publisher<std_msgs::msg::Bool>("/pose_received", 10);
@@ -228,6 +269,33 @@ private:
     double gripper_settle_time_ = 0.1;
     double grasp_yaw_offset_ = PI / 6.0;
 
+    // Tightening task (see the parameter declarations in the constructor).
+    std::string task_mode_ = "pick_place";
+    double tighten_bolt_x_ = -0.30;
+    double tighten_bolt_y_ = 0.75;
+    double tighten_seat_z_ = 0.017;
+    double tighten_nut_bottom_z_ = 0.0245;
+    double tighten_nut_height_ = 0.016;
+    double tighten_nut_yaw_ = 0.0;
+    double thread_pitch_ = 0.0025;
+    double tighten_stroke_deg_ = 120.0;
+    double tighten_snug_torque_ = 1.5;
+    double tighten_max_turns_ = 4.0;
+    double tighten_velocity_scaling_ = 0.5;
+    double tighten_finger_clearance_ = 0.003;
+    double jaw_tip_offset_ = 0.0225;
+    std::string wrist_ft_topic_ = "/wrist_ft";
+    bool tighten_finished_ = false;   // one tightening run per node start (success or failure)
+
+    // Torque monitor state, shared between the wrench callback thread and mainLoop.
+    std::atomic<bool> torque_monitor_armed_{false};
+    std::atomic<bool> snug_detected_{false};
+    std::atomic<double> wrist_torque_z_{0.0};       // latest raw torque about the tool axis
+    std::atomic<double> torque_baseline_{0.0};      // value just before the stroke started
+    std::atomic<double> filtered_net_torque_{0.0};  // |torque - baseline|, low-pass filtered
+    std::atomic<double> peak_net_torque_{0.0};
+    std::atomic<bool> wrist_wrench_received_{false};
+
     std::array<std::array<double, 3>, 3> bin_locations_ = {{
         {0.5, 0.50, 0.05},
         {0.5, 0.55, 0.05},
@@ -237,6 +305,8 @@ private:
     rclcpp::CallbackGroup::SharedPtr pose_callback_group_;
     rclcpp::CallbackGroup::SharedPtr timer_callback_group_;
     rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr pos_angle_sub_;
+    rclcpp::CallbackGroup::SharedPtr wrench_callback_group_;
+    rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr wrist_wrench_sub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr trigger_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pose_received_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
@@ -291,6 +361,37 @@ private:
                          "robot_mode=sim requires use_sim_time=true. Refusing to start so simulation motion "
                          "settings cannot drive hardware.");
             throw std::runtime_error("robot_mode/use_sim_time mismatch");
+        }
+
+        if (task_mode_ != "pick_place" && task_mode_ != "tighten") {
+            RCLCPP_FATAL(this->get_logger(), "Invalid task_mode '%s'. Expected 'pick_place' or 'tighten'.",
+                         task_mode_.c_str());
+            throw std::invalid_argument("invalid task_mode: " + task_mode_);
+        }
+        if (task_mode_ == "tighten") {
+            if (is_real_robot_) {
+                // Not validated on hardware: needs a real wrist F/T signal, a verified grip
+                // torque limit and a real bolt pose. Simulation only for now.
+                RCLCPP_FATAL(this->get_logger(), "task_mode=tighten is simulation-only (robot_mode=sim).");
+                throw std::runtime_error("task_mode=tighten requires robot_mode=sim");
+            }
+            const double sixties = tighten_stroke_deg_ / 60.0;
+            if (tighten_stroke_deg_ <= 0.0 || tighten_stroke_deg_ > 180.0 ||
+                std::abs(sixties - std::round(sixties)) > 1e-6) {
+                RCLCPP_FATAL(this->get_logger(),
+                             "tighten_stroke_deg=%.1f must be 60, 120 or 180 (a multiple of the hexagon's "
+                             "60 deg symmetry, at most 180).", tighten_stroke_deg_);
+                throw std::invalid_argument("invalid tighten_stroke_deg");
+            }
+            if (tighten_snug_torque_ <= 0.0 || thread_pitch_ <= 0.0 || tighten_max_turns_ <= 0.0) {
+                RCLCPP_FATAL(this->get_logger(), "tighten_snug_torque, thread_pitch and tighten_max_turns must be > 0.");
+                throw std::invalid_argument("invalid tightening parameters");
+            }
+            RCLCPP_INFO(this->get_logger(),
+                        "task_mode=tighten: bolt (%.3f, %.3f) seat_z=%.4f nut_bottom_z=%.4f stroke=%.0f deg "
+                        "snug=%.2f N*m pitch=%.4f m/rev",
+                        tighten_bolt_x_, tighten_bolt_y_, tighten_seat_z_, tighten_nut_bottom_z_,
+                        tighten_stroke_deg_, tighten_snug_torque_, thread_pitch_);
         }
 
         if (is_real_robot_) {
@@ -1221,6 +1322,242 @@ private:
         }
     }
 
+    // ============================ Nut tightening (task_mode = "tighten") ============================
+    //
+    // The nut is already on the bolt. The gripper grips two flats, turns the nut clockwise one
+    // stroke while following the thread down, lets go, turns back and grips again, until the
+    // wrist force-torque sensor reports the snug torque (the nut is seated on the plate).
+
+    static std::string format(const char *fmt, ...)
+    {
+        char buffer[256];
+        va_list args;
+        va_start(args, fmt);
+        std::vsnprintf(buffer, sizeof(buffer), fmt, args);
+        va_end(args);
+        return buffer;
+    }
+
+    // Runs on the wrench callback group (in parallel with mainLoop). While a stroke is armed,
+    // it watches the torque about the tool axis and stops the arm once the nut is snug.
+    void onWristWrench(const geometry_msgs::msg::WrenchStamped::SharedPtr msg)
+    {
+        const double torque_z = msg->wrench.torque.z;  // sensor frame = gripper body, z = tool axis
+        wrist_torque_z_.store(torque_z);
+        wrist_wrench_received_.store(true);
+        if (!torque_monitor_armed_.load()) {
+            return;
+        }
+
+        // Low-pass filter (~25 ms time constant at 200 Hz): one noisy contact sample
+        // must not end the tightening.
+        constexpr double kAlpha = 0.2;
+        const double net = std::abs(torque_z - torque_baseline_.load());
+        const double filtered = (1.0 - kAlpha) * filtered_net_torque_.load() + kAlpha * net;
+        filtered_net_torque_.store(filtered);
+        if (filtered > peak_net_torque_.load()) {
+            peak_net_torque_.store(filtered);
+        }
+
+        if (filtered >= tighten_snug_torque_ && !snug_detected_.exchange(true)) {
+            RCLCPP_INFO(this->get_logger(), "Snug torque reached: %.2f N*m (threshold %.2f N*m). Stopping the stroke.",
+                        filtered, tighten_snug_torque_);
+            if (arm_group_) {
+                arm_group_->stop();  // cancels the running trajectory; execute() then returns
+            }
+        }
+    }
+
+    // Start watching the torque for one stroke. The baseline removes any static torque
+    // the grip itself produces.
+    void armTorqueMonitor()
+    {
+        torque_baseline_.store(wrist_torque_z_.load());
+        filtered_net_torque_.store(0.0);
+        peak_net_torque_.store(0.0);
+        snug_detected_.store(false);
+        torque_monitor_armed_.store(true);
+    }
+
+    void disarmTorqueMonitor()
+    {
+        torque_monitor_armed_.store(false);
+    }
+
+    // Direction of the jaw closing axis (tool x) in the horizontal plane [rad].
+    static double toolYaw(const geometry_msgs::msg::Pose &pose)
+    {
+        tf2::Quaternion q;
+        tf2::fromMsg(pose.orientation, q);
+        const tf2::Vector3 x_axis = tf2::quatRotate(q, tf2::Vector3(1.0, 0.0, 0.0));
+        return std::atan2(x_axis.y(), x_axis.x());
+    }
+
+    static double wrapAngle(double angle)
+    {
+        return std::atan2(std::sin(angle), std::cos(angle));
+    }
+
+    // Waypoints that turn the tool about the vertical axis through `start` by `angle`
+    // (negative = clockwise seen from above = tightening). With follow_thread the tool also
+    // moves along the axis by thread_pitch per revolution (down while tightening), exactly
+    // like the nut. 30-degree steps keep the orientation interpolation unambiguous.
+    std::vector<geometry_msgs::msg::Pose> helixWaypoints(
+        const geometry_msgs::msg::Pose &start, double start_yaw, double angle, bool follow_thread)
+    {
+        const int steps = std::max(1, static_cast<int>(std::ceil(std::abs(angle) / (PI / 6.0))));
+        std::vector<geometry_msgs::msg::Pose> waypoints;
+        for (int idx = 1; idx <= steps; ++idx) {
+            const double partial = angle * idx / steps;
+            const double dz = follow_thread ? thread_pitch_ * partial / (2.0 * PI) : 0.0;
+            waypoints.push_back(buildTopDownPose(
+                start.position.x, start.position.y, start.position.z + dz, start_yaw + partial));
+        }
+        return waypoints;
+    }
+
+    // One Cartesian trajectory through all waypoints (collision checking off: the gripper is
+    // intentionally in contact with the nut), time-parameterised at the given scaling.
+    bool executeCartesianWaypoints(
+        const std::vector<geometry_msgs::msg::Pose> &waypoints, double velocity_scaling, double min_fraction = 0.95)
+    {
+        (void)waitForRobotState(0.5);
+        arm_group_->setStartStateToCurrentState();
+        moveit_msgs::msg::RobotTrajectory trajectory;
+        const double fraction = arm_group_->computeCartesianPath(waypoints, 0.002, 0.0, trajectory, false);
+        if (fraction < min_fraction) {
+            RCLCPP_WARN(this->get_logger(), "Cartesian path fraction too low: %.3f (need %.3f)", fraction, min_fraction);
+            return false;
+        }
+        return executeTimedTrajectory(
+            arm_group_, arm_group_name_, trajectory, velocity_scaling, velocity_scaling, true);
+    }
+
+    bool failTightening(const std::string &reason)
+    {
+        disarmTorqueMonitor();
+        RCLCPP_ERROR(this->get_logger(), "Tightening failed: %s", reason.c_str());
+        publishLauncherStatus("Tightening failed", reason);
+        (void)moveGripper(gripper_open_cmd_);  // never leave the gripper clamped on the nut
+        return false;
+    }
+
+    bool runTighteningCycle()
+    {
+        // The sensor may start a few seconds after this node; wait for it before moving.
+        publishLauncherStatus("Tightening: waiting for wrist F/T", wrist_ft_topic_);
+        const auto wait_start = std::chrono::steady_clock::now();
+        while (!wrist_wrench_received_.load() &&
+               std::chrono::steady_clock::now() - wait_start < std::chrono::seconds(10)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (!wrist_wrench_received_.load()) {
+            return failTightening("no data on " + wrist_ft_topic_ + " (wrist force-torque sensor) after 10 s");
+        }
+
+        const double stroke = tighten_stroke_deg_ * PI / 180.0;
+        const double grip_yaw = tighten_nut_yaw_ + grasp_yaw_offset_;  // jaws on two flats
+        // The fingertips must stay at least 1 mm above the plate.
+        const double min_tcp_z = tighten_seat_z_ + 0.001 + jaw_tip_offset_;
+        double nut_bottom_z = tighten_nut_bottom_z_;  // tracked as the nut runs down
+        double turned = 0.0;                          // total nut rotation [rad]
+        double run_peak_torque = 0.0;
+        int strokes = 0;
+        const auto start_time = std::chrono::steady_clock::now();
+
+        // --- Approach: ready pose, then above the nut with the jaws aligned to two flats.
+        publishLauncherStatus("Tightening: approach", "Moving above the nut on the bolt");
+        if (!moveArmToJointTarget(ready_joints_)) {
+            return failTightening("move to ready pose failed");
+        }
+        const auto hover = buildTopDownPose(
+            tighten_bolt_x_, tighten_bolt_y_, nut_bottom_z + tighten_nut_height_ + pregrasp_height_, grip_yaw);
+        if (!planAndExecutePose(hover)) {
+            return failTightening("move above the nut failed");
+        }
+
+        while (true) {
+            if (turned / (2.0 * PI) >= tighten_max_turns_) {
+                return failTightening(format("%.2f turns without reaching %.2f N*m (max %.1f turns)",
+                                             turned / (2.0 * PI), tighten_snug_torque_, tighten_max_turns_));
+            }
+
+            // --- 1. Open, then put the fingertips just above the nut's bottom face.
+            if (!moveGripper(gripper_open_cmd_)) {
+                return failTightening("opening the gripper failed");
+            }
+            const double grasp_z = std::max(nut_bottom_z + tighten_finger_clearance_ + jaw_tip_offset_, min_tcp_z);
+            if (!moveCartesianPose(buildTopDownPose(tighten_bolt_x_, tighten_bolt_y_, grasp_z, grip_yaw), 0.90, false)) {
+                return failTightening("descent to the nut failed");
+            }
+
+            // --- 2. Grip two flats.
+            if (!closeGripperForGrasp()) {
+                return failTightening("could not grip the nut");
+            }
+
+            // --- 3. Turn one stroke clockwise, following the thread down, watching the torque.
+            ++strokes;
+            publishLauncherStatus("Tightening: stroke " + std::to_string(strokes),
+                                  format("%.2f turns so far", turned / (2.0 * PI)));
+            const auto stroke_start = arm_group_->getCurrentPose(flange_link_name_).pose;
+            const double start_yaw = toolYaw(stroke_start);
+            auto waypoints = helixWaypoints(stroke_start, start_yaw, -stroke, true);
+            for (auto &waypoint : waypoints) {
+                waypoint.position.z = std::max(waypoint.position.z, min_tcp_z);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));  // let the grip settle
+            armTorqueMonitor();
+            const bool stroke_ok = executeCartesianWaypoints(waypoints, tighten_velocity_scaling_);
+            disarmTorqueMonitor();
+            const bool snug = snug_detected_.load();
+            run_peak_torque = std::max(run_peak_torque, peak_net_torque_.load());
+
+            // How far did the tool (and so the nut) actually turn? A snug stop ends early.
+            (void)waitForRobotState(0.5);
+            const double end_yaw = toolYaw(arm_group_->getCurrentPose(flange_link_name_).pose);
+            const double rotated = std::clamp(wrapAngle(start_yaw - end_yaw), 0.0, stroke);
+            turned += rotated;
+            nut_bottom_z = std::max(tighten_seat_z_, nut_bottom_z - thread_pitch_ * rotated / (2.0 * PI));
+            RCLCPP_INFO(this->get_logger(),
+                        "Stroke %d: turned %.0f deg, total %.2f turns, nut bottom ~%.4f m, peak torque %.2f N*m%s",
+                        strokes, rotated * 180.0 / PI, turned / (2.0 * PI), nut_bottom_z,
+                        peak_net_torque_.load(), snug ? " -> SNUG" : "");
+            if (snug) {
+                break;
+            }
+            if (!stroke_ok) {
+                return failTightening("turning stroke failed before the snug torque was reached");
+            }
+
+            // --- 4. Let go and turn the open jaws back to the grip yaw (no height change).
+            //        The nut turned a multiple of 60 deg, so the jaws meet two flats again.
+            if (!moveGripper(gripper_open_cmd_)) {
+                return failTightening("releasing the nut after a stroke failed");
+            }
+            const auto release_pose = arm_group_->getCurrentPose(flange_link_name_).pose;
+            if (!executeCartesianWaypoints(helixWaypoints(release_pose, toolYaw(release_pose), stroke, false),
+                                           arm_velocity_scaling_)) {
+                return failTightening("turning the open jaws back failed");
+            }
+        }
+
+        // --- Snug: report, let go and retreat.
+        const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time).count();
+        const std::string summary = format("%.2f turns in %d strokes, peak torque %.2f N*m, %.0f s",
+                                           turned / (2.0 * PI), strokes, run_peak_torque, elapsed);
+        RCLCPP_INFO(this->get_logger(), COLOR_CYAN "Nut is snug: %s" COLOR_RESET, summary.c_str());
+        publishLauncherStatus("Tightening: snug", summary);
+        if (!moveGripper(gripper_open_cmd_)) {
+            return failTightening("releasing the snug nut failed");
+        }
+        const auto final_pose = arm_group_->getCurrentPose(flange_link_name_).pose;
+        (void)moveCartesian(final_pose.position.x, final_pose.position.y, final_pose.position.z + lift_height_, 0.80);
+        (void)moveArmToJointTarget(ready_joints_);
+        publishLauncherStatus("Tightening complete", summary);
+        return true;
+    }
+
     void mainLoop()
     {
         std::unique_lock<std::mutex> loop_lock(main_loop_mutex_, std::try_to_lock);
@@ -1254,6 +1591,17 @@ private:
             return;
         }
         sim_clock_block_logged_ = false;
+
+        // Tightening task: one run per node start; the pick-and-place path below is unused.
+        if (task_mode_ == "tighten") {
+            if (!tighten_finished_) {
+                is_busy_ = true;
+                runTighteningCycle();
+                tighten_finished_ = true;
+                is_busy_ = false;
+            }
+            return;
+        }
 
         if (bin_index_ >= bin_locations_.size()) {
             publishLauncherStatus("Completed", "All configured place slots finished");

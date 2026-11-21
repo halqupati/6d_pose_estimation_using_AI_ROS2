@@ -13,6 +13,7 @@ from launch.actions import SetEnvironmentVariable
 from launch.actions import OpaqueFunction
 
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from moveit_configs_utils import MoveItConfigsBuilder
 
 
@@ -33,6 +34,15 @@ REAL_ROBOT_LIMITS = {
     "arm_acceleration_scaling": ("max", 0.30),
     "grasp_descent_step": ("max", 0.002),
     "gripper_motion_duration": ("min", 1.20),
+}
+
+
+# Tightening launch arguments and their defaults (node parameters of the same name).
+TIGHTEN_ARGS = {
+    "tighten_snug_torque": "1.5",       # N*m on the wrist F/T sensor (jaws slip at ~2.6)
+    "tighten_stroke_deg": "120.0",      # turn per grip: 60, 120 or 180
+    "tighten_max_turns": "4.0",         # safety stop
+    "tighten_velocity_scaling": "0.5",  # arm speed while turning the nut
 }
 
 
@@ -85,6 +95,12 @@ def generate_launch_description():
     collision_check_period = LaunchConfiguration("collision_check_period")
     use_sim_time = LaunchConfiguration("use_sim_time")
     robot_mode = LaunchConfiguration("robot_mode")
+    task_mode = LaunchConfiguration("task_mode")
+    # Tightening tuning (task_mode:=tighten). float() typing so "120" is not passed as an int.
+    tighten_params = {
+        name: ParameterValue(LaunchConfiguration(name), value_type=float)
+        for name in TIGHTEN_ARGS
+    }
 
     # -------------------------
     # MoveIt configuration
@@ -114,6 +130,8 @@ def generate_launch_description():
             {
                 "use_sim_time": use_sim_time,
                 "robot_mode": robot_mode,
+                "task_mode": task_mode,
+                **tighten_params,
                 "flange_link": "grasp_tcp",
                 "tool_center_offset": 0.019,
                 "grasp_final_offset": 0.0,
@@ -189,6 +207,13 @@ def generate_launch_description():
             DeclareLaunchArgument("min_grasp_tcp_above_table", default_value="0.020"),
             DeclareLaunchArgument("enable_collision_monitor", default_value="true"),
             DeclareLaunchArgument("collision_check_period", default_value="0.20"),
+            DeclareLaunchArgument(
+                "task_mode",
+                default_value="pick_place",
+                choices=["pick_place", "tighten"],
+                description="pick_place = bin picking; tighten = run the fixture nut down to snug (sim only).",
+            ),
+            *[DeclareLaunchArgument(name, default_value=default) for name, default in TIGHTEN_ARGS.items()],
             OpaqueFunction(function=_validate_robot_mode),
             move_group_node,
             collision_monitor_node,
