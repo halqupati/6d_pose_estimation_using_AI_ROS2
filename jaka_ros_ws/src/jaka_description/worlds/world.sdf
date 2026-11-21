@@ -168,10 +168,13 @@
       <pose>-0.56 0.66 1.015 0 0 0.95</pose>
     </model>
 
-    <!-- Tightening task: M20 bolt on a fixture plate with a nut threaded on, 3 turns
-         above the seat (see worlds/bolt_m20/model.sdf). On table_2, 6 cm from the
-         ChArUco board and 26 cm from nut4. Robot base frame = world frame shifted
-         down by 1.018 m, so the seat (plate top) is at z = 0.017 in the base frame. -->
+    <!-- Tightening task: EMPTY M20 bolt on a fixture plate (see worlds/bolt_m20/model.sdf).
+         bolt_fixture_manager.py replaces it by a bolt with a threaded nut when a nut is
+         placed on the tip (engage_nut) or for the tighten-only task (preload_nut).
+         On table_2, 6 cm from the ChArUco board and 26 cm from nut4. Robot base frame =
+         world frame shifted down by 1.018 m: seat (plate top) at z = 0.017, bolt tip at
+         z = 0.037 in the base frame. -->
+
     <include>
       <uri>model://bolt_m20</uri>
       <name>bolt_fixture</name>

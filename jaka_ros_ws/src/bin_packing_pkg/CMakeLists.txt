@@ -20,6 +20,7 @@ find_package(control_msgs REQUIRED)
 find_package(moveit_msgs REQUIRED)
 find_package(shape_msgs REQUIRED)
 find_package(geometric_shapes REQUIRED)
+find_package(std_srvs REQUIRED)
 
 set(executable_list
   bin_picking_node_v7_to_control_jaka_s12
@@ -43,6 +44,7 @@ foreach(loop_var IN LISTS executable_list)
     moveit_msgs
     shape_msgs
     geometric_shapes
+    std_srvs
   )
 
   install(TARGETS
@@ -55,6 +57,12 @@ install(DIRECTORY
         launch
         meshes
   DESTINATION share/${PROJECT_NAME}
+)
+
+# Simulation helper for the tightening task (gives a nut its thread, see the script docstring).
+install(PROGRAMS
+  scripts/bolt_fixture_manager.py
+  DESTINATION lib/${PROJECT_NAME}
 )
 
 ament_package()

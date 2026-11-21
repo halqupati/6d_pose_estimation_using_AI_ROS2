@@ -210,8 +210,9 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "task_mode",
                 default_value="pick_place",
-                choices=["pick_place", "tighten"],
-                description="pick_place = bin picking; tighten = run the fixture nut down to snug (sim only).",
+                choices=["pick_place", "tighten", "pick_tighten"],
+                description="pick_place = bin picking; tighten = tighten a nut already on the bolt; "
+                "pick_tighten = pick a nut, put it on the bolt and tighten it (both sim only).",
             ),
             *[DeclareLaunchArgument(name, default_value=default) for name, default in TIGHTEN_ARGS.items()],
             OpaqueFunction(function=_validate_robot_mode),

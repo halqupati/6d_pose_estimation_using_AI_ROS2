@@ -15,6 +15,7 @@
 #include <geometry_msgs/msg/wrench_stamped.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float32_multi_array.hpp>
+#include <std_srvs/srv/trigger.hpp>
 
 #include <algorithm>
 #include <array>
@@ -107,15 +108,17 @@ public:
         // Added to the perception yaw (hex edge direction) so the jaws close on flats.
         grasp_yaw_offset_ = this->declare_parameter<double>("grasp_yaw_offset", PI / 6.0);
 
-        // ---------------- Nut tightening task (task_mode = "tighten") ----------------
-        // "pick_place" = the original bin-picking cycle; "tighten" = run a nut that is
-        // already on a bolt down to a snug torque (docs/tightening/).
+        // ---------------- Nut tightening tasks (docs/tightening/) ----------------
+        //   "pick_place"   = the original bin-picking cycle
+        //   "tighten"      = a nut already threaded on the bolt is run down to snug
+        //   "pick_tighten" = pick a free nut, place it on the bolt tip, then tighten it
         task_mode_ = this->declare_parameter<std::string>("task_mode", "pick_place");
         // Bolt axis and nut, in the robot base frame. Defaults = worlds/bolt_m20 fixture
         // at world (-0.30, 0.75) on the table (z offset: base frame is 1.018 m below world).
         tighten_bolt_x_ = this->declare_parameter<double>("tighten_bolt_x", -0.30);
         tighten_bolt_y_ = this->declare_parameter<double>("tighten_bolt_y", 0.75);
         tighten_seat_z_ = this->declare_parameter<double>("tighten_seat_z", 0.017);          // plate top [m]
+        tighten_bolt_tip_z_ = this->declare_parameter<double>("tighten_bolt_tip_z", 0.037);  // bolt end [m]
         tighten_nut_bottom_z_ = this->declare_parameter<double>("tighten_nut_bottom_z", 0.0245);  // start [m]
         tighten_nut_height_ = this->declare_parameter<double>("tighten_nut_height", 0.016);  // M20 [m]
         tighten_nut_yaw_ = this->declare_parameter<double>("tighten_nut_yaw", 0.0);          // corner axis [rad]
@@ -155,6 +158,14 @@ public:
             rclcpp::SensorDataQoS(),
             std::bind(&ControlRobot::onWristWrench, this, std::placeholders::_1),
             wrench_options);
+
+        // Simulation-only services of bolt_fixture_manager.py that give a nut its thread.
+        // Own reentrant group so their responses arrive while mainLoop waits for them.
+        service_callback_group_ = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+        preload_nut_client_ = this->create_client<std_srvs::srv::Trigger>(
+            "/bolt_fixture/preload_nut", rmw_qos_profile_services_default, service_callback_group_);
+        engage_nut_client_ = this->create_client<std_srvs::srv::Trigger>(
+            "/bolt_fixture/engage_nut", rmw_qos_profile_services_default, service_callback_group_);
 
         trigger_pub_ = this->create_publisher<std_msgs::msg::Bool>("/trigger", 10);
         pose_received_pub_ = this->create_publisher<std_msgs::msg::Bool>("/pose_received", 10);
@@ -274,6 +285,7 @@ private:
     double tighten_bolt_x_ = -0.30;
     double tighten_bolt_y_ = 0.75;
     double tighten_seat_z_ = 0.017;
+    double tighten_bolt_tip_z_ = 0.037;
     double tighten_nut_bottom_z_ = 0.0245;
     double tighten_nut_height_ = 0.016;
     double tighten_nut_yaw_ = 0.0;
@@ -307,6 +319,9 @@ private:
     rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr pos_angle_sub_;
     rclcpp::CallbackGroup::SharedPtr wrench_callback_group_;
     rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr wrist_wrench_sub_;
+    rclcpp::CallbackGroup::SharedPtr service_callback_group_;
+    rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr preload_nut_client_;
+    rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr engage_nut_client_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr trigger_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pose_received_pub_;
     rclcpp::TimerBase::SharedPtr timer_;
@@ -363,17 +378,17 @@ private:
             throw std::runtime_error("robot_mode/use_sim_time mismatch");
         }
 
-        if (task_mode_ != "pick_place" && task_mode_ != "tighten") {
-            RCLCPP_FATAL(this->get_logger(), "Invalid task_mode '%s'. Expected 'pick_place' or 'tighten'.",
+        if (task_mode_ != "pick_place" && task_mode_ != "tighten" && task_mode_ != "pick_tighten") {
+            RCLCPP_FATAL(this->get_logger(), "Invalid task_mode '%s'. Expected pick_place, tighten or pick_tighten.",
                          task_mode_.c_str());
             throw std::invalid_argument("invalid task_mode: " + task_mode_);
         }
-        if (task_mode_ == "tighten") {
+        if (task_mode_ == "tighten" || task_mode_ == "pick_tighten") {
             if (is_real_robot_) {
                 // Not validated on hardware: needs a real wrist F/T signal, a verified grip
                 // torque limit and a real bolt pose. Simulation only for now.
-                RCLCPP_FATAL(this->get_logger(), "task_mode=tighten is simulation-only (robot_mode=sim).");
-                throw std::runtime_error("task_mode=tighten requires robot_mode=sim");
+                RCLCPP_FATAL(this->get_logger(), "task_mode=%s is simulation-only (robot_mode=sim).", task_mode_.c_str());
+                throw std::runtime_error("task_mode=" + task_mode_ + " requires robot_mode=sim");
             }
             const double sixties = tighten_stroke_deg_ / 60.0;
             if (tighten_stroke_deg_ <= 0.0 || tighten_stroke_deg_ > 180.0 ||
@@ -388,9 +403,9 @@ private:
                 throw std::invalid_argument("invalid tightening parameters");
             }
             RCLCPP_INFO(this->get_logger(),
-                        "task_mode=tighten: bolt (%.3f, %.3f) seat_z=%.4f nut_bottom_z=%.4f stroke=%.0f deg "
+                        "task_mode=%s: bolt (%.3f, %.3f) seat_z=%.4f tip_z=%.4f stroke=%.0f deg "
                         "snug=%.2f N*m pitch=%.4f m/rev",
-                        tighten_bolt_x_, tighten_bolt_y_, tighten_seat_z_, tighten_nut_bottom_z_,
+                        task_mode_.c_str(), tighten_bolt_x_, tighten_bolt_y_, tighten_seat_z_, tighten_bolt_tip_z_,
                         tighten_stroke_deg_, tighten_snug_torque_, thread_pitch_);
         }
 
@@ -1442,7 +1457,10 @@ private:
         return false;
     }
 
-    bool runTighteningCycle()
+    // Tighten a nut that is on the bolt. start_nut_bottom_z / nut_yaw are the robot's own
+    // estimate of where the nut is (base frame; yaw = hexagon corner axis); max_turns is the
+    // safety stop.
+    bool runTighteningCycle(double start_nut_bottom_z, double nut_yaw, double max_turns)
     {
         // The sensor may start a few seconds after this node; wait for it before moving.
         publishLauncherStatus("Tightening: waiting for wrist F/T", wrist_ft_topic_);
@@ -1456,10 +1474,10 @@ private:
         }
 
         const double stroke = tighten_stroke_deg_ * PI / 180.0;
-        const double grip_yaw = tighten_nut_yaw_ + grasp_yaw_offset_;  // jaws on two flats
+        const double grip_yaw = nut_yaw + grasp_yaw_offset_;  // jaws on two flats
         // The fingertips must stay at least 1 mm above the plate.
         const double min_tcp_z = tighten_seat_z_ + 0.001 + jaw_tip_offset_;
-        double nut_bottom_z = tighten_nut_bottom_z_;  // tracked as the nut runs down
+        double nut_bottom_z = start_nut_bottom_z;  // tracked as the nut runs down
         double turned = 0.0;                          // total nut rotation [rad]
         double run_peak_torque = 0.0;
         int strokes = 0;
@@ -1477,9 +1495,9 @@ private:
         }
 
         while (true) {
-            if (turned / (2.0 * PI) >= tighten_max_turns_) {
+            if (turned / (2.0 * PI) >= max_turns) {
                 return failTightening(format("%.2f turns without reaching %.2f N*m (max %.1f turns)",
-                                             turned / (2.0 * PI), tighten_snug_torque_, tighten_max_turns_));
+                                             turned / (2.0 * PI), tighten_snug_torque_, max_turns));
             }
 
             // --- 1. Open, then put the fingertips just above the nut's bottom face.
@@ -1558,6 +1576,91 @@ private:
         return true;
     }
 
+    // Call a std_srvs/Trigger service and wait for the answer (the response is handled on
+    // service_callback_group_ while this thread waits). Returns success; fills `message`.
+    bool callTrigger(const rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr &client, std::string &message,
+                     double timeout_sec = 30.0)
+    {
+        if (!client->wait_for_service(std::chrono::seconds(5))) {
+            message = std::string("service ") + client->get_service_name() + " is not available";
+            return false;
+        }
+        auto future = client->async_send_request(std::make_shared<std_srvs::srv::Trigger::Request>());
+        if (future.wait_for(std::chrono::duration<double>(timeout_sec)) != std::future_status::ready) {
+            message = std::string("no answer from ") + client->get_service_name();
+            return false;
+        }
+        const auto response = future.get();
+        message = response->message;
+        return response->success;
+    }
+
+    // task_mode = "tighten": a nut is threaded onto the bolt 3 turns above the seat
+    // (simulation stand-in for "a nut is already on the bolt"), then tightened.
+    bool tightenPreloadedNut()
+    {
+        publishLauncherStatus("Tightening: preparing bolt", "Threading a nut onto the bolt fixture (simulation)");
+        std::string message;
+        if (!callTrigger(preload_nut_client_, message)) {
+            return failTightening("could not preload a nut on the bolt: " + message);
+        }
+        RCLCPP_INFO(this->get_logger(), "Bolt fixture: %s", message.c_str());
+        return runTighteningCycle(tighten_nut_bottom_z_, tighten_nut_yaw_, tighten_max_turns_);
+    }
+
+    // task_mode = "pick_tighten", called after the pick sequence lifted the nut:
+    // carry it over the bolt, set it on the bolt tip, let go, let the thread "catch"
+    // (bolt_fixture_manager swaps in a threaded nut), then tighten it.
+    bool placeNutOnBoltAndTighten(double picked_nut_top_z)
+    {
+        // Where is the nut relative to the TCP? At the grasp, the TCP was at validated_pick_pose_
+        // and the nut's bottom face at (detected top - nut height).
+        const double tcp_above_nut_bottom =
+            validated_pick_pose_.position.z - (picked_nut_top_z - tighten_nut_height_);
+        const double place_yaw = toolYaw(arm_group_->getCurrentPose(flange_link_name_).pose);
+
+        // --- 1. Above the bolt, keeping the jaw orientation the nut was picked with.
+        publishLauncherStatus("Placing nut on bolt", "Moving above the bolt fixture");
+        RCLCPP_INFO(this->get_logger(), COLOR_GREEN "Place on bolt: tcp is %.4f m above the nut bottom" COLOR_RESET,
+                    tcp_above_nut_bottom);
+        const auto hover = buildTopDownPose(
+            tighten_bolt_x_, tighten_bolt_y_, tighten_bolt_tip_z_ + tcp_above_nut_bottom + pregrasp_height_, place_yaw);
+        if (!planAndExecutePose(hover)) {
+            return failTightening("move above the bolt failed");
+        }
+
+        // --- 2. Lower the nut until its bottom face is 1 mm above the bolt tip.
+        const auto place = buildTopDownPose(
+            tighten_bolt_x_, tighten_bolt_y_, tighten_bolt_tip_z_ + 0.001 + tcp_above_nut_bottom, place_yaw);
+        if (!moveCartesianPose(place, 0.90, false)) {
+            return failTightening("lowering the nut onto the bolt failed");
+        }
+
+        // --- 3. Let go (the nut settles on the tip) and move clear.
+        const double placed_yaw = toolYaw(arm_group_->getCurrentPose(flange_link_name_).pose);
+        if (!moveGripper(gripper_open_cmd_)) {
+            return failTightening("releasing the nut on the bolt failed");
+        }
+        const auto released = arm_group_->getCurrentPose(flange_link_name_).pose;
+        (void)moveCartesian(released.position.x, released.position.y, released.position.z + 0.03, 0.80);
+
+        // --- 4. The thread catches (simulation: swap in a nut on a screw joint).
+        publishLauncherStatus("Placing nut on bolt", "Engaging the thread");
+        std::string message;
+        if (!callTrigger(engage_nut_client_, message)) {
+            return failTightening("the nut did not engage the thread: " + message);
+        }
+        RCLCPP_INFO(this->get_logger(), "Bolt fixture: %s", message.c_str());
+
+        // --- 5. Tighten from the robot's own estimate: nut bottom just below the tip, and
+        //        nut corner axis = jaw yaw at release - grasp_yaw_offset.
+        const double nut_bottom_z = tighten_bolt_tip_z_ - 0.001;
+        const double nut_yaw = placed_yaw - grasp_yaw_offset_;
+        const double turns_to_seat = (nut_bottom_z - tighten_seat_z_) / thread_pitch_;
+        RCLCPP_INFO(this->get_logger(), "Nut on the bolt: %.2f turns above the seat, yaw %.2f rad", turns_to_seat, nut_yaw);
+        return runTighteningCycle(nut_bottom_z, nut_yaw, turns_to_seat + 1.0);
+    }
+
     void mainLoop()
     {
         std::unique_lock<std::mutex> loop_lock(main_loop_mutex_, std::try_to_lock);
@@ -1592,14 +1695,19 @@ private:
         }
         sim_clock_block_logged_ = false;
 
-        // Tightening task: one run per node start; the pick-and-place path below is unused.
+        // Tighten-only task: one run per node start; the pick-and-place path below is unused.
         if (task_mode_ == "tighten") {
             if (!tighten_finished_) {
                 is_busy_ = true;
-                runTighteningCycle();
+                tightenPreloadedNut();
                 tighten_finished_ = true;
                 is_busy_ = false;
             }
+            return;
+        }
+        // Pick + tighten: uses the normal pick sequence (0-4), then sequence 5 places the nut
+        // on the bolt and tightens it. One nut per node start (there is one bolt).
+        if (task_mode_ == "pick_tighten" && tighten_finished_) {
             return;
         }
 
@@ -1818,6 +1926,13 @@ private:
             }
 
             case 5: {
+                if (task_mode_ == "pick_tighten") {
+                    // The nut is held and lifted: put it on the bolt and tighten it.
+                    placeNutOnBoltAndTighten(static_cast<double>(local_nut[2]));
+                    tighten_finished_ = true;
+                    sequence_ = 0;
+                    break;
+                }
                 publishLauncherStatus("Sequence 5: Move to place hover");
                 RCLCPP_INFO(this->get_logger(), COLOR_GREEN "Sequence 5: Move to place hover" COLOR_RESET);
                 const auto place_hover_pose = buildTopDownPose(

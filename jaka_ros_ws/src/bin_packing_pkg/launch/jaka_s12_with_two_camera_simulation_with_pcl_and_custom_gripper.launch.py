@@ -224,6 +224,16 @@ def generate_launch_description():
         ]
     )
 
+    # Tightening task (simulation only): gives a nut its thread by swapping the empty bolt
+    # fixture for one with a screw-jointed nut (scripts/bolt_fixture_manager.py).
+    bolt_fixture_manager = Node(
+        package="bin_packing_pkg",
+        executable="bolt_fixture_manager.py",
+        name="bolt_fixture_manager",
+        output="screen",
+        parameters=[{"use_sim_time": True}],
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument("headless_rendering", default_value="true"),
         gazebo_resource_path,
@@ -237,4 +247,5 @@ def generate_launch_description():
         gz_launch_description_with_gui,
         gz_sim_bridge,
         depth_image_converter,
+        bolt_fixture_manager,
     ])
