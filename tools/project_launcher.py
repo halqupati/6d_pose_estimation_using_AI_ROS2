@@ -1253,7 +1253,10 @@ class ProjectLauncherApp:
             ProcessConfig(
                 key="sim",
                 title="Simulation",
-                command=build_ros_launch_command("bin_packing_pkg", sim_launch),
+                # LAUNCHER_DEMO_VIEW=1 (set by tools/record_desktop_demo.py): zoomed-in views for videos.
+                command=build_ros_launch_command(
+                    "bin_packing_pkg", sim_launch,
+                    {"demo_view": "true"} if os.environ.get("LAUNCHER_DEMO_VIEW") == "1" else None),
                 cleanup_patterns=(
                     f"ros2 launch bin_packing_pkg {sim_launch}",
                     "ign gazebo server",
@@ -1361,7 +1364,9 @@ class ProjectLauncherApp:
         if not all(controller_is_active(controllers_output, name) for name in required_controllers):
             return False
 
-        rc, nodes_output = self._run_ros_cli("ros2 node list", timeout_sec=10.0)
+        # --no-daemon: a stale ros2 daemon (left from an earlier session) can report an empty
+        # graph for hours, and Start All would then wait for MoveIt forever.
+        rc, nodes_output = self._run_ros_cli("ros2 node list --no-daemon", timeout_sec=15.0)
         if rc != 0:
             return False
 

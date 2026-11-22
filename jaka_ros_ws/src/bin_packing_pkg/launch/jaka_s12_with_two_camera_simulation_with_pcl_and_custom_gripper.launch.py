@@ -51,9 +51,15 @@ def generate_launch_description():
         "world.sdf"
     ])
 
+    # demo_view:=true (used for demo videos): RViz without side panels and a Gazebo GUI with only
+    # the 3D view, both zoomed in on the nuts, the bolt and the robot.
+    demo_view = PythonExpression(["'", LaunchConfiguration("demo_view"), "'.lower() == 'true'"])
     rviz_config_file = PathJoinSubstitution(
-        [FindPackageShare("jaka_description"), "config", "display2.rviz"]
+        [FindPackageShare("jaka_description"), "config",
+         PythonExpression(["'display2_demo.rviz' if ", demo_view, " else 'display2.rviz'"])]
     )
+    gazebo_demo_gui = PathJoinSubstitution(
+        [FindPackageShare("jaka_description"), "config", "gazebo_demo_gui.config"])
     controllers_file = PathJoinSubstitution(
         [FindPackageShare("jaka_s12_moveit_config"), "config", "ros2_controllers.yaml"]
     )
@@ -180,6 +186,7 @@ def generate_launch_description():
             "-r -v 4 ",
             PythonExpression(["'--headless-rendering ' if '", LaunchConfiguration("headless_rendering"),
                               "'.lower() == 'true' else ''"]),
+            PythonExpression(["'--gui-config ", gazebo_demo_gui, " ' if ", demo_view, " else ''"]),
             world_path,
         ]}.items(),
     )
@@ -246,6 +253,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument("headless_rendering", default_value="true"),
+        DeclareLaunchArgument("demo_view", default_value="false",
+                              description="Zoomed-in RViz and Gazebo views without side panels (videos)"),
         gazebo_resource_path,
         robot_state_publisher_node,
         run_move_group_node,

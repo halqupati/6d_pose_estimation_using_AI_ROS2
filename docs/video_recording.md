@@ -47,3 +47,31 @@ recommends.
 
 The videos are not committed to git (`media_and_files/videos/` is ignored); upload them
 directly.
+
+## 3. Full desktop demo: `tools/record_desktop_demo.py` + `tools/make_demo_video.py`
+
+A portfolio video of the whole system: Gazebo, RViz, the launcher and the YOLO window tiled
+2x2 on a private 2560x1440 X display, from "Start All" to the next detection.
+
+```bash
+Xtigervnc :97 -geometry 2560x1440 -depth 24 -SecurityTypes None -localhost &
+DISPLAY=:97 LAUNCHER_TASK=pick_tighten python3 tools/record_desktop_demo.py \
+    --out media_and_files/videos/desktop_raw.mkv
+python3 tools/make_demo_video.py media_and_files/videos/desktop_raw.mkv \
+    media_and_files/videos/jaka_s12_full_system_demo.mp4
+```
+
+- **Zoomed views (`demo_view:=true`).** The recorder starts the launcher with
+  `LAUNCHER_DEMO_VIEW=1`, so the simulation launch gets `demo_view:=true`:
+  - Gazebo uses `jaka_description/config/gazebo_demo_gui.config`: only the 3D view and the play
+    and real-time-factor widgets, `horizontal_fov` 55° (the default is very wide, so everything
+    looks small) and a `camera_pose` close to the nuts, the bolt and the robot.
+  - RViz uses `display2_demo.rviz`: no side panels and no MotionPlanning display (it brings its
+    own dock and, when disabled, logs "No robot state" errors); the camera frames the whole arm.
+  - Normal runs (`demo_view` defaults to false) keep the usual Gazebo GUI and `display2.rviz`.
+- **Rendering cost.** Both windows render in software on a VNC display, so the simulation runs
+  at about 0.15-0.3x real time while recording. `make_demo_video.py` speeds each chapter up and
+  shows the factor on screen.
+- **Stale `ros2 daemon`.** A daemon left from an earlier session can report an empty ROS graph
+  for hours. The launcher's readiness check therefore uses `ros2 node list --no-daemon`;
+  otherwise Start All waits for MoveIt forever. `ros2 daemon stop` clears a stale daemon.

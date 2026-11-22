@@ -4,6 +4,8 @@
 Runs everything on an X display of its own (e.g. a private Xtigervnc :97, 2560x1440), so your
 desktop is not touched:
   1. starts tools/project_launcher.py on that display (task chosen with LAUNCHER_TASK),
+     with LAUNCHER_DEMO_VIEW=1, so the simulation starts with demo_view:=true: Gazebo and
+     RViz without side panels, zoomed in on the nuts, the bolt and the robot,
   2. keeps the four windows tiled 2x2 with python-xlib (no window manager needed):
         Gazebo GUI | RViz
         launcher   | YOLO "Stable Detection" window
@@ -41,8 +43,6 @@ LAYOUT = {
     "JAKA S12 Control Deck": (0, 640, 1280, 800),
     "Stable Detection": (1280, 640, 1280, 800),
 }
-# Gazebo GUI camera: a close view of the nuts, the bolt and the robot (world frame).
-GAZEBO_CAMERA = ((-1.25, 1.35, 1.65), (-0.32, 0.50, 1.08))
 START_ALL_GREEN = (22, 163, 74)  # launcher START colour (#16A34A)
 
 
@@ -108,25 +108,6 @@ class Desktop:
         return int(x0 + xs[left].mean()), int(y0 + ys[left].mean())
 
 
-def move_gazebo_camera() -> bool:
-    """Point the Gazebo GUI camera at the work cell (GUI service /gui/move_to/pose)."""
-    import math
-    (cx, cy, cz), (tx, ty, tz) = GAZEBO_CAMERA
-    yaw = math.atan2(ty - cy, tx - cx)
-    pitch = math.atan2(cz - tz, math.hypot(tx - cx, ty - cy))  # positive = looking down
-    # quaternion of roll=0, pitch, yaw
-    qw = math.cos(pitch / 2) * math.cos(yaw / 2)
-    qx = -math.sin(pitch / 2) * math.sin(yaw / 2)
-    qy = math.sin(pitch / 2) * math.cos(yaw / 2)
-    qz = math.cos(pitch / 2) * math.sin(yaw / 2)
-    request = (f"pose {{ position {{ x: {cx} y: {cy} z: {cz} }} "
-               f"orientation {{ x: {qx} y: {qy} z: {qz} w: {qw} }} }}")
-    reply = subprocess.run(["ign", "service", "-s", "/gui/move_to/pose", "--reqtype", "ignition.msgs.GUICamera",
-                            "--reptype", "ignition.msgs.Boolean", "--timeout", "3000", "--req", request],
-                           capture_output=True, text=True, timeout=10).stdout
-    return "data: true" in reply
-
-
 class StageLogger:
     """Collects [LAUNCHER_STATUS] stages from /rosout with their time since recording start."""
 
@@ -164,7 +145,8 @@ def main() -> None:
     width, height = desktop.d.screen().width_in_pixels, desktop.d.screen().height_in_pixels
 
     launcher = subprocess.Popen(["python3", str(ROOT / "tools/project_launcher.py")], cwd=ROOT,
-                                env=dict(os.environ, LAUNCHER_TASK=os.environ.get("LAUNCHER_TASK", "pick_tighten")),
+                                env=dict(os.environ, LAUNCHER_TASK=os.environ.get("LAUNCHER_TASK", "pick_tighten"),
+                                         LAUNCHER_DEMO_VIEW="1"),  # zoomed-in Gazebo + RViz
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
     for _ in range(60):
         if "JAKA S12 Control Deck" in desktop.tile():
@@ -183,7 +165,7 @@ def main() -> None:
     events = []
 
     button = None
-    for _ in range(30):  # the launcher may still be drawing its widgets
+    for _ in range(90):  # the launcher may still be drawing its widgets (slow on a busy machine)
         time.sleep(1.0)
         desktop.tile()
         button = desktop.find_start_all()
@@ -191,23 +173,16 @@ def main() -> None:
             break
     if button is None:
         print("Start All button not found; clicking the header's default position")
-        button = (LAYOUT["JAKA S12 Control Deck"][0] + 1100, LAYOUT["JAKA S12 Control Deck"][1] + 85)
+        button = (LAYOUT["JAKA S12 Control Deck"][0] + 1120, LAYOUT["JAKA S12 Control Deck"][1] + 66)
     desktop.click(*button)
     events.append((round(time.time() - t0, 2), "Start All clicked"))
     print(f"[{time.time() - t0:7.1f}s] Start All clicked at {button}", flush=True)
 
     finish_at = None
-    camera_moves = 0
     m0 = time.monotonic()  # does not advance while the machine is suspended
     try:
         while time.monotonic() - m0 < args.max_minutes * 60:
-            found = desktop.tile()  # windows appear one after another
-            # Once the Gazebo GUI is up, move its camera close to the cell (twice: the GUI may
-            # still reset the view right after loading).
-            if "Gazebo" in found and camera_moves < 2 and time.time() - t0 > 20 + 15 * camera_moves:
-                if move_gazebo_camera():
-                    camera_moves += 1
-                    print(f"[{time.time() - t0:7.1f}s] Gazebo camera moved", flush=True)
+            desktop.tile()  # windows appear one after another
             if finish_at is None and logger.stage in ("Next nut detected", "Tightening failed"):
                 finish_at = time.monotonic() + args.tail_seconds
             if finish_at is not None and time.monotonic() >= finish_at:
