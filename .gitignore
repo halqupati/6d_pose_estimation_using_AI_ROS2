@@ -57,3 +57,4 @@ nohup.out
 
 # Rendered simulation videos (large; upload them instead): tools/sim_video_recorder.py
 media_and_files/videos/
+media_and_files/freelancer_images/
