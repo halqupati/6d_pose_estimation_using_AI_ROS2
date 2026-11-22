@@ -1,9 +1,0 @@
-# Default initial positions for jaka_zu5's ros2_control fake system
-
-initial_positions:
-  joint_1: -1.570
-  joint_2: 1.570
-  joint_3: 1.570
-  joint_4: 1.570
-  joint_5: -1.570
-  joint_6: 0

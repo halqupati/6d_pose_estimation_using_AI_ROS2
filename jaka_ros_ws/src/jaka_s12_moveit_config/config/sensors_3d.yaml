@@ -1,0 +1,18 @@
+octomap_frame: base_link
+octomap_resolution: 0.05
+publish_octomap: true
+publish_octomap_full: false
+
+sensors:
+  - point_cloud_camera
+
+point_cloud_camera:
+    sensor_plugin: occupancy_map_monitor/PointCloudOctomapUpdater
+    point_cloud_topic: /rgbd_camera/points_filtered_external
+    frame_id: base_link
+    max_range: 2.5
+    point_subsample: 4
+    padding_offset: 0.1
+    padding_scale: 1.0
+    max_update_rate: 5.0
+    filtered_cloud_topic: /rgbd_camera/points_filtered

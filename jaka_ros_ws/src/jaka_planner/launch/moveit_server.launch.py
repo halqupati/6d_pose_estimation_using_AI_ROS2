@@ -8,7 +8,7 @@ def generate_launch_description():
     return LaunchDescription([
         # Declare 'ip' and 'model' arguments
         DeclareLaunchArgument('ip', default_value='127.0.0.1', description='IP address'),
-        DeclareLaunchArgument('model', default_value='default_model', description='Model name'),
+        DeclareLaunchArgument('model', default_value='s12', description='Controller model suffix, e.g. s12 -> /jaka_s12_controller'),
 
         # Launch the 'moveit_server' node from the 'jaka_planner' package
         Node(

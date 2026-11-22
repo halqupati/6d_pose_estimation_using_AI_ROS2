@@ -1,0 +1,3 @@
+1. 6D pose estimtion using (AAE and yolov12-seq (updated to yolov26-seq))
+2. create ros2 simulation to simulate pick and palce nut by 6d pose pipeline ang jaka_s12 using ROS2 and gazebo ignation.
+3. run 6D psoe and ros2 configration in real using jaka_s12 and 

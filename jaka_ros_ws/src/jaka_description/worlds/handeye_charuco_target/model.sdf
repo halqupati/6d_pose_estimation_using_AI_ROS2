@@ -1,0 +1,36 @@
+<?xml version='1.0'?>
+<!--
+  ChArUco hand-eye calibration target.
+  Physical size: 0.20 m (X) x 0.28 m (Y).
+  The mesh is a 2x2 m plane (-1..1 in X and Y), scaled to real dimensions.
+  MoveIt plugin parameters:
+    Dictionary:    DICT_4X4_50
+    Squares X:     5
+    Squares Y:     7
+    Square Length: 0.04 m
+    Marker Length: 0.03 m
+-->
+<sdf version="1.6">
+  <model name="handeye_charuco_target">
+    <static>true</static>
+    <link name="link">
+      <visual name="visual">
+        <geometry>
+          <mesh>
+            <uri>model://handeye_charuco_target/meshes/handeye_charuco_target.dae</uri>
+            <!-- scale: board_width/2 x board_height/2 x thin_depth -->
+            <!-- 0.20/2=0.10  0.28/2=0.14 -->
+            <scale>0.10 0.14 0.001</scale>
+          </mesh>
+        </geometry>
+      </visual>
+      <collision name="collision">
+        <geometry>
+          <box>
+            <size>0.20 0.28 0.002</size>
+          </box>
+        </geometry>
+      </collision>
+    </link>
+  </model>
+</sdf>

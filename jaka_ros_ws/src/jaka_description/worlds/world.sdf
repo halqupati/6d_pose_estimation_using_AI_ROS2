@@ -1,33 +1,83 @@
 <?xml version="1.0" ?>
 <sdf version="1.9">
   <world name="empty_world">
-    
+
     <!-- Physics -->
-    <physics name="default_physics" type="ode">
+    <!-- Ignition Fortress always uses the DART physics plugin; the old <ode> solver
+         block was ignored. Switching DART's collision detector from FCL to Bullet
+         raised the real-time factor from ~0.08 to ~0.27 on this machine (robot links
+         collide as 5k-30k-triangle meshes). Bullet cannot collide two triangle meshes,
+         so the parts that must touch (jaw pads, nuts) use primitive collision shapes.
+         Keep the 1 ms step: gz_ros2_control runs the controllers at 1 kHz. -->
+    <physics name="default_physics" type="dart">
       <max_step_size>0.001</max_step_size>
       <real_time_factor>1.0</real_time_factor>
       <real_time_update_rate>1000</real_time_update_rate>
-      <ode>
-        <solver>
-          <type>quick</type>
-          <iters>100</iters>
-          <sor>1.3</sor>
-        </solver>
-        <constraints>
-          <cfm>0.0</cfm>
-          <erp>0.2</erp>
-        </constraints>
-      </ode>
+      <dart>
+        <collision_detector>bullet</collision_detector>
+      </dart>
     </physics>
 
- 
+    <!-- World systems. Declaring any plugin here disables Gazebo's default set, so the
+         three defaults (from ~/.ignition/gazebo/6/server.config) are listed explicitly.
+         ForceTorque runs the wrist F/T sensor (custom_gripper_macro). It must be a world
+         plugin: loaded from the robot model it starts in the same step the robot is spawned
+         and never creates the sensor ("No publishers on topic /wrist_ft").
+         The camera Sensors system is still loaded from jaka_s12.urdf. -->
+    <plugin filename="ignition-gazebo-physics-system" name="ignition::gazebo::systems::Physics"/>
+    <plugin filename="ignition-gazebo-user-commands-system" name="ignition::gazebo::systems::UserCommands"/>
+    <plugin filename="ignition-gazebo-scene-broadcaster-system" name="ignition::gazebo::systems::SceneBroadcaster"/>
+    <plugin filename="ignition-gazebo-forcetorque-system" name="ignition::gazebo::systems::ForceTorque"/>
+
     <!-- Light -->
     <light name="sun" type="directional">
       <pose>0 0 10 0 0 0</pose>
-      <diffuse>0.8 0.8 0.8 1</diffuse>
-      <specular>0.2 0.2 0.2 1</specular>
-      <direction>-0.5 0.1 -0.9</direction>
+      <diffuse>0.62 0.62 0.64 1</diffuse>
+      <specular>0.06 0.06 0.06 1</specular>
+      <direction>-0.35 0.18 -0.92</direction>
       <cast_shadows>true</cast_shadows>
+    </light>
+
+    <!-- Focused light above the pick zone so the nut flats and bore stay
+         readable for RGB-based YOLO and AAE inference. -->
+    <light name="pick_zone_key_light" type="spot">
+      <pose>-0.50 0.55 1.85 0 0 0</pose>
+      <diffuse>0.95 0.96 1.00 1</diffuse>
+      <specular>0.10 0.10 0.10 1</specular>
+      <cast_shadows>false</cast_shadows>
+      <direction>0.02 0.00 -1.0</direction>
+      <attenuation>
+        <range>3.0</range>
+        <constant>0.8</constant>
+        <linear>0.10</linear>
+        <quadratic>0.02</quadratic>
+      </attenuation>
+      <spot>
+        <inner_angle>0.40</inner_angle>
+        <outer_angle>0.75</outer_angle>
+        <falloff>0.35</falloff>
+      </spot>
+    </light>
+
+    <!-- Add a softer side light so the nut bore and flats keep readable
+         contrast after the first nut is removed and shadows change. -->
+    <light name="pick_zone_fill_light" type="spot">
+      <pose>-0.18 0.22 1.60 0 0 0</pose>
+      <diffuse>0.62 0.66 0.72 1</diffuse>
+      <specular>0.04 0.04 0.04 1</specular>
+      <cast_shadows>false</cast_shadows>
+      <direction>-0.22 0.28 -0.94</direction>
+      <attenuation>
+        <range>2.5</range>
+        <constant>1.0</constant>
+        <linear>0.18</linear>
+        <quadratic>0.04</quadratic>
+      </attenuation>
+      <spot>
+        <inner_angle>0.35</inner_angle>
+        <outer_angle>0.70</outer_angle>
+        <falloff>0.45</falloff>
+      </spot>
     </light>
     
 
@@ -69,41 +119,67 @@
         <pose>0 0.81 0.0 0 0 0</pose>
     </include>
     
+    <!-- ChArUco board for MoveIt hand-eye calibration (eye-in-hand).
+         Parameters: squaresX=5, squaresY=7, squareLength=0.04m,
+         markerLength=0.03m, dictionary=DICT_4X4_50.
+         Placed flat on the table, face pointing up (+Z).
+         z = 1.016: the 2 mm collision box now spans 1.015..1.017 (table top = 1.015).
+         It was at z = 1.035, floating 2 cm above the table; its edge sits 1 cm from nut3,
+         so a finger pad landed on it and the pick descent stalled 16.7 mm short
+         ("Pick pose validation failed after descent" for nut3 only). -->
+    <include>
+        <uri>model://handeye_charuco_target</uri>
+        <name>handeye_charuco_target</name>
+        <pose>-0.30 0.50 1.016 0 0 0</pose>
+    </include>
+
+    <!-- Checkerboard plane (kept for camera intrinsic calibration) -->
     <include>
         <uri>model://checkerboard_plane</uri>
         <name>checkerboard plane</name>
-        <pose>0 0.81 1.2 0 0 0</pose>
+        <pose>0.4 1.0 1.03 0 0 0</pose>
     </include>
 
     <model name="nut1">
       <include>
         <uri>model://nut</uri>
       </include>
-      <pose>-0.6 0.0 1.05 1.5 1.5 1.5</pose>
+      <pose>-0.62 0.48 1.015 0 0 1.35</pose>
     </model>
 
     <model name="nut2">
       <include>
         <uri>model://nut</uri>
       </include>
-      <pose>-0.5 0.02 1.05 0 0 0</pose>
+      <pose>-0.51 0.54 1.015 0 0 0.45</pose>
     </model>
 
     <model name="nut3">
       <include>
         <uri>model://nut</uri>
       </include>
-      <pose>-0.4 0.08 1.05 0 0 0</pose>
+      <pose>-0.41 0.62 1.015 0 0 -0.55</pose>
     </model>
 
     <model name="nut4">
       <include>
         <uri>model://nut</uri>
       </include>
-      <pose>-0.5 0.07 1.05 0 0 0</pose>
+      <pose>-0.56 0.66 1.015 0 0 0.95</pose>
     </model>
 
-   
-    
+    <!-- Tightening task: EMPTY M20 bolt on a fixture plate (see worlds/bolt_m20/model.sdf).
+         bolt_fixture_manager.py replaces it by a bolt with a threaded nut when a nut is
+         placed on the tip (engage_nut) or for the tighten-only task (preload_nut).
+         On table_2, 6 cm from the ChArUco board and 26 cm from nut4. Robot base frame =
+         world frame shifted down by 1.018 m: seat (plate top) at z = 0.017, bolt tip at
+         z = 0.037 in the base frame. -->
+
+    <include>
+      <uri>model://bolt_m20</uri>
+      <name>bolt_fixture</name>
+      <pose>-0.30 0.75 1.015 0 0 0</pose>
+    </include>
+
   </world>
 </sdf>

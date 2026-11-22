@@ -3,7 +3,7 @@
 <package format="3">
   <name>jaka_hardware_bringup</name>
   <version>0.1.0</version>
-  <description>Bring-up package for JAKA ZU5 real hardware with D435 eye-in-hand camera.</description>
+  <description>Bring-up package for JAKA real hardware with a RealSense eye-in-hand camera.</description>
 
   <maintainer email="ubuntu@todo.todo">ubuntu</maintainer>
   <license>Apache-2.0</license>
@@ -13,13 +13,24 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>launch_testing</exec_depend>
-  <exec_depend>jaka_zu5_moveit_config</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>jaka_s12_moveit_config</exec_depend>
   <exec_depend>bin_packing_pkg</exec_depend>
   <exec_depend>jaka_driver</exec_depend>
+  <exec_depend>moveit_configs_utils</exec_depend>
+  <exec_depend>moveit_ros_move_group</exec_depend>
+  <exec_depend>moveit_ros_visualization</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>rviz2</exec_depend>
   <exec_depend>hexnut_6d_planner</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>realsense2_camera</exec_depend>
   <exec_depend>pcl_ros</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

@@ -6,7 +6,55 @@ jaka_ros_ws/src/jaka_description/launch/__pycache__/
 jaka_ros_ws/.catkin_workspace
 jaka_ros_ws/.vscode
 jaka_ros_ws/new file
+jaka_ros_ws/src/bin_packing_pkg/launch/__pycache__
+jaka_ros_ws/src/jaka_s12_moveit_config/launch/__pycache__/jaka_s12_moveit_gazebo_camera.launch.cpython-310.pyc
+
+/aae_infer/autoencoder_ws/__pycache__/aae_ros_infer_sim_v4.cpython-310.pyc
 aae_infer/autoencoder_ws/experiments/exp_group/my_autoencoder/checkpoints
 /aae_infer/autoencoder_ws/tmp_datasets
-jaka_ros_ws/src/bin_packing_pkg/launch/__pycache__
-yolov12_seg_infer/__pycache__/yolo_ros_infer_sim_v11.cpython-310.pyc
+
+jaka_ros_ws/src/hexnut_6d_planner/hexnut_6d_planner/__pycache__
+
+
+yolov12_seg_infer/__pycache__
+
+tools/__pycache__
+calibration_runs/
+jaka_ros_ws/calibration_runs/
+
+
+jaka_ros_ws/src/jaka_eye_in_hand_calibration/launch/__pycache__/easy_handeye_calibrate.launch.cpython-310.pyc
+jaka_ros_ws/src/jaka_eye_in_hand_calibration/launch/__pycache__/easy_handeye_publish.launch.cpython-310.pyc
+jaka_ros_ws/src/jaka_eye_in_hand_calibration/launch/__pycache__/camera_intrinsics.launch.cpython-310.pyc
+jaka_ros_ws/src/jaka_eye_in_hand_calibration/launch/__pycache__/moveit_handeye.launch.cpython-310.pyc
+jaka_ros_ws/src/jaka_eye_to_hand_calibration/launch/__pycache__/camera_intrinsics.launch.cpython-310.pyc
+jaka_ros_ws/src/jaka_eye_to_hand_calibration/launch/__pycache__/easy_handeye_calibrate.launch.cpython-310.pyc
+jaka_ros_ws/src/jaka_eye_to_hand_calibration/launch/__pycache__/easy_handeye_publish.launch.cpython-310.pyc
+jaka_ros_ws/src/jaka_eye_to_hand_calibration/launch/__pycache__/moveit_handeye.launch.cpython-310.pyc
+
+# NOTE: entries that ignored .gitignore itself, docs/*.md, the M6 nut source meshes
+# (media_and_files/nut models/...) and jaka_s12_moveit_config/config/handeye_calibration.rviz
+# were removed: they were a pasted `git status` list, and handeye_calibration.rviz is
+# required by jaka_eye_in_hand_calibration/launch/calibration.launch.py.
+
+# ---- Python bytecode (generic; already-tracked .pyc files are NOT untracked by this) ----
+__pycache__/
+*.py[cod]
+
+# ---- AAE / TensorFlow training artefacts ----
+# TensorBoard event logs: large (M6 log is ~94 MB) and never model weights.
+events.out.tfevents.*
+# Checkpoints of every AAE experiment (M20 my_autoencoder, M6 my_autoencoder_m6, ...).
+# The experiment .cfg files and train_figures/ next to them remain tracked.
+aae_infer/autoencoder_ws/experiments/*/*/checkpoints/
+# Rendered training datasets / codebook caches (~3.4 GB)
+aae_infer/autoencoder_ws/tmp_datasets/
+
+# ---- YOLO / generic training outputs ----
+runs/
+nohup.out
+*.tmp
+
+# Rendered simulation videos (large; upload them instead): tools/sim_video_recorder.py
+media_and_files/videos/
+media_and_files/freelancer_images/
