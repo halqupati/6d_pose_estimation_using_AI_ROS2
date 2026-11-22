@@ -131,7 +131,9 @@ public:
         thread_pitch_ = this->declare_parameter<double>("thread_pitch", 0.0025);             // M20 coarse [m/rev]
         // Turn per grip. A multiple of 60 deg, so after turning back the open jaws meet
         // two flats again; at most 180 deg so the rotation direction is unambiguous.
-        tighten_stroke_deg_ = this->declare_parameter<double>("tighten_stroke_deg", 120.0);
+        // 180 deg: verified in simulation (fewer regrasps than 120: 16 instead of 23 strokes
+        // for the 7.6 turns from the bolt tip to the seat).
+        tighten_stroke_deg_ = this->declare_parameter<double>("tighten_stroke_deg", 180.0);
         // Snug threshold, measured on the wrist F/T sensor. Running torque seen: 0.01-0.21 N*m.
         // The parallel jaws slip on a seated M20 nut at 1.3-2.8 N*m depending on how squarely
         // they sit on the flats, so 1.0 N*m is ~5x the running torque and below every slip seen
@@ -314,7 +316,7 @@ private:
     double tighten_nut_height_ = 0.016;
     double tighten_nut_yaw_ = 0.0;
     double thread_pitch_ = 0.0025;
-    double tighten_stroke_deg_ = 120.0;
+    double tighten_stroke_deg_ = 180.0;
     double tighten_snug_torque_ = 1.0;
     double tighten_max_turns_ = 4.0;
     double tighten_velocity_scaling_ = 0.5;
@@ -322,6 +324,7 @@ private:
     double jaw_tip_offset_ = 0.0225;
     std::string wrist_ft_topic_ = "/wrist_ft";
     bool tighten_finished_ = false;   // one tightening run per node start (success or failure)
+    bool next_nut_reported_ = false;  // pick_tighten: the follow-up detection was reported
 
     // Torque monitor state, shared between the wrench callback thread and mainLoop.
     std::atomic<bool> torque_monitor_armed_{false};
@@ -1793,6 +1796,19 @@ private:
         // Pick + tighten: uses the normal pick sequence (0-4), then sequence 5 places the nut
         // on the bolt and tightens it. One nut per node start (there is one bolt).
         if (task_mode_ == "pick_tighten" && tighten_finished_) {
+            // The bolt is done. A nut pose that arrives now comes from the "next detection"
+            // requested after tightening: report it (there is no second bolt to use it on).
+            if (nut_pose_received_ && !next_nut_reported_) {
+                std::array<float, 4> next{};
+                if (getNutPose(next)) {
+                    publishLauncherStatus("Next nut detected",
+                                          format("at (%.3f, %.3f); bolt already tightened, task finished",
+                                                 next[0], next[1]));
+                    RCLCPP_INFO(this->get_logger(), COLOR_CYAN "Next nut detected at (%.3f, %.3f)" COLOR_RESET,
+                                next[0], next[1]);
+                }
+                next_nut_reported_ = true;
+            }
             return;
         }
 
@@ -2013,7 +2029,16 @@ private:
             case 5: {
                 if (task_mode_ == "pick_tighten") {
                     // The nut is held and lifted: put it on the bolt and tighten it.
-                    placeNutOnBoltAndTighten(static_cast<double>(local_nut[2]));
+                    if (placeNutOnBoltAndTighten(static_cast<double>(local_nut[2]))) {
+                        // Ask perception for the next nut, as the cell would for the next bolt.
+                        nut_pose_received_ = false;
+                        publishLauncherStatus("Detecting next nut", "Tightening complete; requesting a new detection");
+                        std_msgs::msg::Bool trigger;
+                        trigger.data = false;
+                        trigger_pub_->publish(trigger);
+                        trigger.data = true;
+                        trigger_pub_->publish(trigger);
+                    }
                     tighten_finished_ = true;
                     sequence_ = 0;
                     break;

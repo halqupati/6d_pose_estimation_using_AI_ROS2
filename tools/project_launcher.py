@@ -3,6 +3,7 @@
 import math
 import os
 import queue
+import re
 import shlex
 import shutil
 import signal
@@ -204,6 +205,10 @@ def run_shell_capture(command: str, timeout_sec: float = 15.0) -> tuple[int, str
 
 
 def controller_is_active(controllers_output: str, controller_name: str) -> bool:
+    # `ros2 control list_controllers` colours its output even when piped
+    # ("\x1b[92mactive\x1b[0m"); strip the ANSI codes or no controller ever looks active
+    # and Start All waits for a "simulation ready" that never comes.
+    controllers_output = re.sub(r"\x1b\[[0-9;]*m", "", controllers_output)
     for line in controllers_output.splitlines():
         parts = line.split()
         if not parts or parts[0] != controller_name:
@@ -521,7 +526,10 @@ class ProjectLauncherApp:
         self.retry_count = 0
         self.pipeline_pills: dict[str, tuple[tk.Label, str]] = {}
         self.closing = False
-        self.task_label_var = tk.StringVar(value="Pick & place")
+        # Initial task: LAUNCHER_TASK=pick_place|tighten|pick_tighten (default pick_place).
+        initial_task = next((label for label, mode in TASK_MODES.items()
+                             if mode == os.environ.get("LAUNCHER_TASK", "pick_place")), "Pick & place")
+        self.task_label_var = tk.StringVar(value=initial_task)
         self.bolt_text = tk.StringVar(value="--")
         self.bolt_detail_text = tk.StringVar(value="Sim ground truth (bolt fixture).")
 

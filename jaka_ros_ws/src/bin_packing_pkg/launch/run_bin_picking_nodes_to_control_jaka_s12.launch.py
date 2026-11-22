@@ -40,7 +40,7 @@ REAL_ROBOT_LIMITS = {
 # Tightening launch arguments and their defaults (node parameters of the same name).
 TIGHTEN_ARGS = {
     "tighten_snug_torque": "1.0",       # N*m on the wrist F/T sensor (jaws slip at 1.3-2.8)
-    "tighten_stroke_deg": "120.0",      # turn per grip: 60, 120 or 180
+    "tighten_stroke_deg": "180.0",      # turn per grip: 60, 120 or 180
     "tighten_max_turns": "4.0",         # safety stop
     "tighten_velocity_scaling": "0.5",  # arm speed while turning the nut
 }
